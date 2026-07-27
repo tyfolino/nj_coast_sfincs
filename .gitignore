@@ -1,0 +1,59 @@
+# Model output (large, root-owned after Docker run)
+# The guide notebook writes its build here; one conventional output dir.
+model/
+# Experiment sweep output (built models + solver output + report); reproducible
+# from run_experiments.py, so kept out of git like model/.
+experiments/
+# legacy output dirs (now under archive/models/, kept out of git)
+model_quadtree/
+model_quadtree_x2/
+
+# Data (large rasters) — ignored wholesale, then the small SOURCE files are
+# un-ignored below. In nj_sandy_sfincs the whole of data/ was untracked, which
+# meant the data catalog, the region polygon and the refinement polygons — the
+# three files that actually DEFINE a domain — lived outside version control.
+# For a multi-domain repo that is exactly backwards: the domain definitions are
+# source, only the rasters they point at are bulk.
+data/*
+!data/*/
+data/*/*
+!data/data_catalog.yml
+!data/region_*.geojson
+!data/quadtree/*.geojson
+!data/basins/*.geojson
+!data/flux_crosssections.geojson
+!data/flux_crosssections.crs
+!data/roughness/*.csv
+!data/roughness/*.md
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Logs
+*.log
+logs/
+
+# HPC / Amarel — reproducible env + containers + scratch outputs (never commit)
+# (git does NOT support inline comments — keep patterns on their own lines)
+# micromamba env (rebuild from hpc/environment.yml). No trailing slash: in this
+# repo both are SYMLINKS into nj_sandy_sfincs, and a `dir/` pattern does not
+# match a symlink, so the trailing-slash form leaves them showing as untracked.
+micromamba
+# editable clone (re-clone @ pinned commit d8514d6)
+hydromt_sfincs
+# Singularity images (re-pull from deltares/sfincs-cpu) + container tarballs
+*.sif
+*.tar
+# known-good model backup (large outputs)
+model_quadtree.good/
+
+# Archived old models + bloated legacy notebooks (junk drawer; large, not tracked)
+archive/
+# nbconvert --execute artifacts
+notebooks/*.executed.ipynb
+sfincs-env.tar.gz

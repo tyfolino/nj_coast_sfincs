@@ -1,0 +1,664 @@
+"""Build the NJ Sandy quadtree SFINCS model, in pure functions.
+
+Lifted verbatim (behaviour-preserving) from notebooks/sfincs-nj-sandy.ipynb:
+
+* ``build_static``  — Phase 1, cells 9–33 (grid, elevation, mask, boundary,
+  obs points, roughness, subgrid) → written once into a template dir.
+* ``add_forcing``   — Phase 2, cells 38–50 (window + surge, wind/pressure, rain,
+  discharge, infiltration).
+* ``add_waves``     — Phase 2 cell 52 (the SnapWave block), extended with Tim's
+  physics params + the optional ocean-side wavemaker.
+* ``finalize``      — Phase 2 cell 54 (release handles, write, patch sfincs.inp,
+  write the SnapWave ASCII forcing).
+
+The NJ-Sandy-specific coordinate boxes (bay include, boundary corrections) are
+kept as module constants with the original comments — re-derive them for a
+different NJ region (see notebook Appendix A).
+"""
+
+from __future__ import annotations
+
+import gc
+import os
+import shutil
+from pathlib import Path
+
+import geopandas as gpd
+import numpy as np
+import shapely
+import xarray as xr
+from hydromt import log
+from hydromt_sfincs import SfincsModel
+from shapely.geometry import Point
+
+from . import domain as _domain
+from .config import ROOT, BaseConfig, WaveConfig
+
+# HDF5/netCDF file locking off before any netCDF-backed write on /cache (a failed
+# lock surfaces as a misleading "NetCDF: Permission denied"). Mirrors the notebook.
+os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")
+
+# ── Geography now lives in the DOMAIN REGISTRY ───────────────────────────────
+# `BAY_INCLUDE_BOX_LL`, `SANDY_HOOK_TIP_Y` and the three inline mask-correction
+# boxes used to be module-level literals here. They are per-domain facts, so they
+# moved to nj_sfincs/domain.py where extending the model south is one registry
+# entry instead of a hunt through five modules. Everything left in this block is
+# domain-INDEPENDENT: it stays right no matter where the domain is.
+
+# Thickness of the seaward ring promoted to SnapWave boundary when the wave
+# domain is decoupled: cells within this many metres of the deep cut become
+# msk==2. Wide enough to give a contiguous ring on a 200 m quadtree edge.
+SNAPWAVE_BND_RING = 5.0
+
+# A free-outflow (Neumann) BC on water deeper than this is a DRAIN, not a boundary.
+OUTFLOW_MAX_DEPTH = -1.0
+# A cell the model calls (near-)land while a real survey says there is water this deep
+# beneath it has been PAVED OVER by a failed lidar return.
+PAVED_BED_LAND = -0.5
+PAVED_SURVEY_WATER = -2.0
+
+
+def _open_coast_max_y() -> float:
+    """Northing above which the coast is no longer open Atlantic.
+
+    Incident SnapWave energy must only enter along the open-ocean edge. North of
+    the Sandy Hook tip the "boundary" wraps into the enclosed harbour/bay corner,
+    and leaving boundary cells there let waves run away into it — the ~1e13
+    blow-up. Support points are likewise taken only from below this line.
+
+    Comes from the domain registry; ``inf`` means the whole seaward edge is open
+    coast, which is the right default for a domain with no such spit.
+    """
+    y = _domain.active().open_coast_max_y
+    return float("inf") if y is None else y
+
+
+def _check_domain_invariants(sf, mask, zb) -> None:
+    """Refuse to ship a domain with either of the two defects that cost us two months.
+
+    Both bugs were INFRASTRUCTURE, not physics — a region polygon and an elevation
+    tier — which is exactly why an exhaustive elimination of every *physical* lever
+    (wind, friction, mesh resolution, wave convergence, channel dredging) came back
+    null for weeks. Nobody suspects a boundary condition. So we assert them instead.
+
+    1. NO FREE-OUTFLOW BC ON OPEN WATER. The region polygon chopped the Navesink in
+       half mid-channel and hydromt put a free-outflow BC on the 5 m-deep cut face.
+       The model drained 92.5% of the estuary's entire inflow out of that hole,
+       one-way, in 100% of timesteps, from the first hour. THIS ONE CHECK WOULD HAVE
+       CAUGHT IT ON DAY ONE.
+
+    2. NO PAVED-OVER CHANNELS. `usace_nj_2010` is green lidar: in deep or turbid
+       water it fails to penetrate and returns the WATER SURFACE (~0 to +2 m), which
+       looks like land. Ranked top of the elevation list, it shadowed CUDEM's correct
+       bed and sealed Shark River Inlet — leaving the entire Shark estuary at exactly
+       +0.00 m, never flooding, through Hurricane Sandy, while the ocean 1.8 km away
+       reached +2.9 m. We check the model bed against the eHydro survey (a boat with
+       an echo sounder) wherever that survey has data.
+    """
+    import rasterio
+
+    from .config import DATA
+
+    fail = []
+
+    n_wet_out = int(((mask == 3) & (zb < OUTFLOW_MAX_DEPTH)).sum())
+    if n_wet_out:
+        fail.append(
+            f"{n_wet_out} free-outflow cells (mask=3) sit on water below "
+            f"{OUTFLOW_MAX_DEPTH} m. That is a DRAIN, not a boundary — it is the bug "
+            f"that emptied the Navesink."
+        )
+
+    tif = DATA / "elevation" / "ehydro_nj.tif"
+    if tif.exists():
+        fx, fy = sf.quadtree_grid.data.grid.face_coordinates.T
+        act = mask > 0
+        with rasterio.open(tif) as d:
+            v = np.array(
+                [r[0] for r in d.sample(zip(fx[act].tolist(), fy[act].tolist()))],
+                dtype="float64",
+            )
+            if d.nodata is not None:
+                v[v == d.nodata] = np.nan
+        v[v < -1e5] = np.nan
+        paved = (zb[act] >= PAVED_BED_LAND) & (v < PAVED_SURVEY_WATER)
+        if paved.any():
+            fail.append(
+                f"{int(paved.sum())} active cells are (near-)land in the model "
+                f"(bed >= {PAVED_BED_LAND} m) where the eHydro survey sounded water "
+                f"below {PAVED_SURVEY_WATER} m. A channel is still paved over."
+            )
+
+    if fail:
+        raise RuntimeError(
+            "[build_static] DOMAIN INVARIANTS FAILED:\n  - " + "\n  - ".join(fail)
+        )
+    print("[build_static] domain invariants OK "
+          "(no outflow BC on water; no paved-over surveyed channel)")
+
+
+def apply_mask_and_boundary(base: BaseConfig, sf: SfincsModel) -> None:
+    """Build the active mask + water-level/outflow boundaries and enforce the invariants.
+
+    Extracted verbatim from ``build_static`` (sections 4-5) so it has ONE source of
+    truth. ``build_static`` calls it on a freshly-built grid; the boundary-depth sweep
+    (``scripts/setup_boundary_depth.py``) calls it on a COPY of the frozen mesh to
+    re-derive the mask at a different ``mask_zmin`` — a pure mask/boundary change that
+    reuses the frozen subgrid tables (every face already has them), so no rebuild.
+    Depends only on ``sf`` and ``base`` (``base.mask_zmin`` and ``base.region``).
+    """
+    # 4. Active mask ----------------------------------------------------------
+    # Boxes forced active at any depth, so dredged channels (-11..-27 m in
+    # Raritan / Sandy Hook Bay) don't punch inactive holes through a bay interior.
+    _boxes = _domain.active().always_active_boxes_ll
+    bay_include = (
+        gpd.GeoDataFrame(geometry=[shapely.box(*b) for b in _boxes], crs=4326)
+        if _boxes else None
+    )
+    sf.quadtree_mask.create_active(zmin=base.mask_zmin, include_polygon=bay_include)
+
+    # Clip the active mask to the region polygon (the rotated grid fills the L's
+    # bounding box; drop the dry inland cells in the concave notch). Mask-only.
+    _region = gpd.read_file(base.region).to_crs(sf.crs).geometry.iloc[0]
+    fx, fy = sf.quadtree_grid.data.grid.face_coordinates.T
+    _outside = ~shapely.contains_xy(_region, fx, fy)
+    mask = sf.quadtree_grid.data["mask"].values.copy()
+    mask[_outside] = 0
+    sf.quadtree_grid.data["mask"] = sf.quadtree_grid.data["mask"].copy(data=mask)
+
+    # 5. Boundary cells -------------------------------------------------------
+    sf.quadtree_mask.create_boundary(btype="waterlevel", zmax=-1, reset_bounds=True)
+    sf.quadtree_mask.create_boundary(
+        btype="outflow", zmin=-1, zmax=2, reset_bounds=False
+    )
+
+    # Region-specific mask corrections, from the DOMAIN REGISTRY rather than
+    # inline literals. Each is a rectangle in the domain CRS with a from-code and
+    # a to-code; see nj_sfincs/domain.py for what each one is for and why.
+    #
+    # These used to be three hand-written boolean expressions here. The reason
+    # they moved: two of them have UNBOUNDED sides, which makes them silently
+    # domain-dependent — `fx < 582_500 & fy < 4_474_000` selected a small corner
+    # of v1 and would have selected almost the whole southern lobe of v2.
+    mask = sf.quadtree_grid.data["mask"].values.copy()
+    fx, fy = sf.quadtree_grid.data.grid.face_coordinates.T
+    for ov in _domain.active().mask_overrides:
+        xmin, ymin, xmax, ymax = ov.box
+        sel = mask == ov.frm
+        if xmin is not None:
+            sel &= fx > xmin
+        if ymin is not None:
+            sel &= fy > ymin
+        if xmax is not None:
+            sel &= fx < xmax
+        if ymax is not None:
+            sel &= fy < ymax
+        n = int(sel.sum())
+        if n:
+            print(f"[mask] override {ov.name}: {n} cells {ov.frm} → {ov.to}  ({ov.why})")
+        mask[sel] = ov.to
+
+    # (d) SEAL ANY FREE-OUTFLOW BC THAT LANDS ON OPEN WATER  (2026-07-14) ------
+    # A free-outflow (Neumann) boundary is the condition you use where water may
+    # leave and never return. On a DEEP CROSS-SECTION OF A TIDAL RIVER it is not a
+    # boundary, it is a DRAIN — and that is precisely the bug that wasted two
+    # months of this project. The region polygon used to chop the Navesink in half
+    # mid-channel; hydromt dutifully put mask=3 on the 5 m-deep cut face; the model
+    # then ran that face at -0.82 m/s OUT of the domain in 100% of timesteps, never
+    # once reversing, and **92.5% of everything entering the estuary vanished**.
+    # The estuary was a pipe, not a bathtub, and every "null result" in the campaign
+    # was really just a bucket with a hole in it.
+    #
+    # The region fix (west edge -> x=577,000) now lands the domain edge on dry land
+    # at the Navesink and Shark, so this should catch nothing there. It still fires
+    # at the NW/Raritan corner, which sits on the TRUE domain edge — there is no
+    # more river to enclose, so the only correct treatment is a wall.
+    #
+    # A wet outflow cell becomes an ordinary active cell (mask=1); the inactive
+    # ground beyond it is then SFINCS's default closed wall. Dry outflow cells are
+    # left alone: they legitimately let overland flood water leave the domain
+    # instead of ponding against the edge.
+    zb = sf.quadtree_grid.data["z"].values
+    wet_outflow = (mask == 3) & (zb < OUTFLOW_MAX_DEPTH)
+    if wet_outflow.any():
+        print(f"[mask] sealing {int(wet_outflow.sum())} free-outflow cells that sit on "
+              f"water (deepest {zb[wet_outflow].min():+.2f} m) — an outflow BC on open water "
+              f"is a drain, not a boundary")
+        mask[wet_outflow] = 1
+    sf.quadtree_grid.data["mask"] = sf.quadtree_grid.data["mask"].copy(data=mask)
+
+    _check_domain_invariants(sf, mask, zb)
+
+
+def build_static(base: BaseConfig, template_dir: Path, skip_subgrid: bool = False) -> None:
+    """Phase 1 — build grid/elevation/mask/subgrid and write to ``template_dir``.
+
+    Forcing-independent, so it runs once; ``add_forcing`` reopens from disk.
+    """
+    template_dir = Path(template_dir)
+    template_dir.mkdir(parents=True, exist_ok=True)
+
+    # Reproducibility short-circuit: the quadtree grid+subgrid build is
+    # environment-sensitive — two builds of identical code/config can differ by
+    # ~18 cells, which shifts CSI ~0.04 (notebook 0.54 vs harness 0.50; see
+    # project memory). If a frozen static mesh is provided, copy it verbatim so
+    # every run — harness AND notebook — shares ONE identical grid. Freeze once
+    # with scripts/freeze_mesh.py; point BaseConfig.frozen_mesh at the result.
+    if base.frozen_mesh is not None:
+        frozen = Path(base.frozen_mesh)
+        if not (frozen / "sfincs.inp").exists():
+            raise FileNotFoundError(
+                f"BaseConfig.frozen_mesh={frozen} has no sfincs.inp — "
+                f"build it first with scripts/freeze_mesh.py"
+            )
+        print(f"[build_static] reusing frozen mesh from {frozen} (no rebuild)")
+        shutil.copytree(frozen, template_dir, dirs_exist_ok=True)
+        return
+
+    log.initialize_logging()
+    log.set_log_level(log_level=30)  # warnings + errors only (quiet build)
+    log.to_file(template_dir / "hydromt_sfincs.log", append=False)
+
+    sf = SfincsModel(
+        data_libs=base.data_libs, root=str(template_dir), mode="w+", write_gis=True
+    )
+
+    # 2. Quadtree grid --------------------------------------------------------
+    refinement_gdf = gpd.read_file(base.refinement)
+    sf.quadtree_grid.create_from_region(
+        region={"geom": str(base.region)},
+        res=base.base_res,
+        rotated=base.rotated,
+        crs=base.crs,
+        refinement_polygons=refinement_gdf,
+        elevation_list=base.elevation(),
+    )
+
+    # 3. Elevation ------------------------------------------------------------
+    sf.quadtree_elevation.create(
+        elevation_list=base.elevation(), buffer_cells=0, nrmax=2000
+    )
+
+    # 4-5. Active mask + boundary cells --------------------------------------
+    apply_mask_and_boundary(base, sf)
+
+    # 6. Observation points (validation gauges only) --------------------------
+    # From the domain registry. Names must stay stable: every his-based metric
+    # matches its station by substring on this name.
+    gauges = _domain.active().obs_gauges
+    val_gauges = gpd.GeoDataFrame(
+        {"name": [g.name for g in gauges]},
+        geometry=[Point(g.lon, g.lat) for g in gauges],
+        crs="EPSG:4326",
+    )
+    print(f"[obs] {len(gauges)} observation points: {', '.join(g.name for g in gauges)}")
+    sf.observation_points.create(locations=val_gauges, merge=False)
+
+    # 7. Roughness + subgrid (memory/CPU peak) --------------------------------
+    if skip_subgrid:
+        # Domain-geometry dry run: everything the invariants need (grid, elevation,
+        # mask, boundaries) is already built, and the subgrid is by far the most
+        # expensive step. Used by scripts/validate_domain.py to PROVE a region /
+        # elevation change is right BEFORE paying for a full rebuild.
+        print("[build_static] skip_subgrid=True — stopping after mask/boundary (no subgrid)")
+        fx, fy = sf.quadtree_grid.data.grid.face_coordinates.T
+        np.savez(
+            template_dir / "domain_dryrun.npz",
+            x=fx, y=fy,
+            z=sf.quadtree_grid.data["z"].values,
+            mask=sf.quadtree_grid.data["mask"].values,
+        )
+        del sf
+        gc.collect()
+        return
+
+    for src in list(sf.data_catalog.sources):
+        s = sf.data_catalog.get_source(src)
+        if hasattr(s, "_data"):
+            s._data = None
+    gc.collect()
+
+    roughness_list = [{"lulc": "nlcd_2012", "reclass_table": str(base.reclass_table)}]
+    sf.quadtree_roughness.create(roughness_list=roughness_list, nrmax=200)
+    sf.quadtree_subgrid.create(
+        elevation_list=base.elevation(),
+        roughness_list=roughness_list,
+        nr_subgrid_pixels=base.nr_subgrid_pixels,
+        nrmax=2000,  # DO NOT lower — smaller explodes the block loop
+        write_dep_tif=True,  # per-level subgrid DEMs (flood-map downscale)
+        write_man_tif=True,
+    )
+
+    # 8. Write ----------------------------------------------------------------
+    sf.write()
+    del sf
+    gc.collect()
+
+
+def add_forcing(base: BaseConfig, sf: SfincsModel) -> None:
+    """Phase 2 — window + physics flags and every compound forcing (no waves)."""
+    sf.config.update(
+        {
+            "tref": base.tref,
+            "tstart": base.tstart,
+            "tstop": base.tstop,
+            "tspinup": 3600.0,
+            "coriolis": 1,
+            "latitude": base.latitude,
+            "advection": 1,
+            "dtmapout": 3600.0,  # map output every hour
+            "dtmaxout": 86400.0,  # one zsmax over the whole run
+            "dthisout": 600.0,  # his output every 10 min
+        }
+    )
+
+    sf.water_level.create(
+        geodataset=base.waterlevel_geodataset,
+        buffer=base.waterlevel_buffer,
+        merge=False,
+    )
+    sf.wind.create(wind="era5_nj")
+    sf.pressure.create(press="era5_nj")
+    sf.precipitation.create(
+        precip="aorc_sandy_nj", cumulative_input=True, aggregate=False
+    )
+    sf.discharge_points.create(geodataset="usgs_sandy_discharge", merge=False)
+    sf.quadtree_infiltration.create_cn(cn="cn_nj", antecedent_moisture=None, nrmax=2000)
+
+
+def add_waves(wcfg: WaveConfig, base: BaseConfig, sf: SfincsModel) -> dict:
+    """Phase 2 cell 52 — the SnapWave block. Returns the ASCII boundary arrays.
+
+    Adds Tim's physics params when ``wcfg.tune_physics`` and the ocean-side
+    wavemaker when ``wcfg.wavemaker`` (both no-ops otherwise, so the default
+    ``wind_waves`` preset reproduces the notebook byte-for-byte).
+    """
+    if wcfg.decouple_snapwave:
+        # DECOUPLED: the wave solver gets its own, DEEPER domain. The SFINCS mask
+        # (and with it the water-level boundary) is left untouched, so tide/surge
+        # forcing stays at the coast while waves are imposed out on the shelf.
+        # The X2 mesh already extends to lon -73.449 / -69 m: ~141k offshore cells
+        # sit inactive purely because BaseConfig.mask_zmin cuts at -10 m.
+        sf.quadtree_snapwave_mask.create_active(
+            zmin=wcfg.snapwave_mask_zmin, copy_sfincsmask=False
+        )
+        # ...but `zmin` alone is NOT the seaward extension we want. create_active
+        # rebuilds from scratch and admits EVERY cell above the threshold inside the
+        # region, so -30 m also sweeps in the inland high ground (10,431 cells, up to
+        # +106 m, lon -74.28..-74.10) that the SFINCS mask excludes by its own
+        # include/exclude criteria. Those are SnapWave-active but SFINCS-INACTIVE and
+        # dry -- precisely the X1 runaway geometry (a wave cell where SFINCS computes
+        # no zs). So take the union we actually meant: everything the coupled premier
+        # had, PLUS only the genuinely submerged band down to snapwave_mask_zmin.
+        _sm = sf.quadtree_grid.data["mask"].values
+        _zz = sf.quadtree_grid.data["z"].values
+        _band = (
+            (sf.quadtree_grid.data["snapwave_mask"].values > 0)
+            & (_sm == 0)
+            & np.isfinite(_zz)
+            & (_zz <= base.mask_zmin)
+        )
+        # Interior is uniformly active (1); create_boundary below promotes the seaward
+        # rim to 2. Copying the SFINCS codes verbatim would import mask==2/3 (the
+        # water-level/outflow boundary at the COAST) as wave-boundary cells, which is
+        # the coupling this arm exists to remove.
+        sf.quadtree_grid.data["snapwave_mask"] = sf.quadtree_grid.data[
+            "snapwave_mask"
+        ].copy(data=np.where((_sm > 0) | _band, 1, 0).astype(_sm.dtype))
+        # Wave boundary = the new SEAWARD edge, not the inherited SFINCS mask==2.
+        # btype="waves" (snapwave's own vocabulary; "waterlevel" is SFINCS-only and
+        # raises here). create_boundary picks cells on the ACTIVE-DOMAIN EDGE that
+        # also satisfy zmax, so this ring is the seaward rim only — the landward
+        # edge is far shallower than the cut and is filtered out.
+        sf.quadtree_snapwave_mask.create_boundary(
+            btype="waves", zmax=wcfg.snapwave_mask_zmin + SNAPWAVE_BND_RING
+        )
+    else:
+        # X1 SnapWave: the wave solver shares the SFINCS mesh. Overwrite the fresh
+        # snapwave_mask with the SFINCS mask so waves + hydrodynamics use one mesh.
+        sf.quadtree_snapwave_mask.create_active(zmin=base.mask_zmin)
+        sf.quadtree_grid.data["snapwave_mask"] = sf.quadtree_grid.data[
+            "snapwave_mask"
+        ].copy(data=sf.quadtree_grid.data["mask"].values.copy())
+
+    # Incident-wave boundary = the OPEN-ATLANTIC edge only. Demote every snapwave
+    # boundary cell north of the Sandy Hook tip back to active interior, so
+    # incident waves don't run away into the enclosed NW corner (the ~1e13 blow-up).
+    _swm = sf.quadtree_grid.data["snapwave_mask"].values.copy()
+    _swfy = sf.quadtree_grid.data.grid.face_coordinates[:, 1]
+    _demote = (_swm == 2) & (_swfy >= _open_coast_max_y())
+    _swm[_demote] = 1
+    sf.quadtree_grid.data["snapwave_mask"] = sf.quadtree_grid.data[
+        "snapwave_mask"
+    ].copy(data=_swm)
+
+    # Support points = the DEEP (z<-5), open-Atlantic (y<tip) stretch of the
+    # boundary, binned by northing, easternmost (seaward) cell per bin.
+    # Decoupled: read the SNAPWAVE boundary (out on the shelf). Coupled: the
+    # SFINCS mask==2 boundary, as X1 left it.
+    N = wcfg.wave_n_support
+    _fc = sf.quadtree_grid.data.grid.face_coordinates
+    _z = sf.quadtree_grid.data["z"].values
+    _bnd_src = "snapwave_mask" if wcfg.decouple_snapwave else "mask"
+    _atl = (
+        (sf.quadtree_grid.data[_bnd_src].values == 2)
+        & np.isfinite(_z)
+        & (_z < -5.0)
+        & (_fc[:, 1] < _open_coast_max_y())
+    )
+    _bxy = _fc[_atl]
+    _ybins = np.linspace(_bxy[:, 1].min(), _bxy[:, 1].max(), N + 1)
+    snapwave_pts = np.array(
+        [
+            grp[np.argmax(grp[:, 0])]
+            for k in range(N)
+            for grp in [_bxy[(_bxy[:, 1] >= _ybins[k]) & (_bxy[:, 1] <= _ybins[k + 1])]]
+            if len(grp)
+        ]
+    )
+
+    # Uniform alongshore forcing from the nearest valid ERA5 wave node.
+    _ew = sf.data_catalog.get_rasterdataset(wcfg.wave_geodataset)
+    _node = _ew.sel(
+        x=wcfg.wave_era5_node[0], y=wcfg.wave_era5_node[1], method="nearest"
+    )
+    snapwave_t = (_node["time"].values - _node["time"].values[0]) / np.timedelta64(
+        1, "s"
+    )
+    snapwave_hs = _node["hs"].values
+    snapwave_tp = _node["tp"].values
+    snapwave_wd = _node["wd"].values
+    snapwave_ds = np.full_like(snapwave_hs, 30.0)  # ERA5 has no dir-spreading; 30 deg
+
+    # Optional ocean-side wavemaker (native hydromt call; writes sfincs.wvm).
+    if wcfg.wavemaker:
+        sf.wave_makers.create(str(wcfg.wavemaker_line), merge=False)
+
+    cfg = {
+        "snapwave": 1,
+        "snapwave_igwaves": int(wcfg.wave_igwaves),
+        "snapwave_wind": int(wcfg.wave_wind),
+        "snapwave_sector": wcfg.sector(),
+        "dtwave": wcfg.dtwave,
+        "storewavdir": 1,
+    }
+    if wcfg.tune_physics:
+        cfg.update(
+            {
+                "snapwave_alpha": wcfg.snapwave_alpha,
+                "snapwave_gamma": wcfg.snapwave_gamma,
+                "snapwave_hmin": wcfg.snapwave_hmin,
+                "snapwave_dtheta": wcfg.snapwave_dtheta,
+                "snapwave_fw": wcfg.snapwave_fw,
+                "snapwave_niter": wcfg.snapwave_niter,
+                "storefw": wcfg.storefw,
+            }
+        )
+    sf.config.update(cfg)
+
+    return {
+        "pts": snapwave_pts,
+        "t": snapwave_t,
+        "hs": snapwave_hs,
+        "tp": snapwave_tp,
+        "wd": snapwave_wd,
+        "ds": snapwave_ds,
+    }
+
+
+def set_inp_keys(inp: Path, kv: dict) -> None:
+    """Set/overwrite ``key = value`` lines in a sfincs.inp, appending any that are absent."""
+    lines = Path(inp).read_text().splitlines()
+    have = {ln.split("=")[0].strip() for ln in lines if "=" in ln}
+    out = [
+        f"{ln.split('=')[0].strip():<20} = {kv[ln.split('=')[0].strip()]}"
+        if "=" in ln and ln.split("=")[0].strip() in kv
+        else ln
+        for ln in lines
+    ]
+    out += [f"{k:<20} = {v}" for k, v in kv.items() if k not in have]
+    Path(inp).write_text("\n".join(out) + "\n")
+
+
+def restore_diagnostics(model_dir: Path) -> None:
+    """Re-enable the flux/mass-budget diagnostics that ``sf.write()`` drops.
+
+    hydromt's writer knows nothing about ``crsfile`` (cross-sections) or ``storevel``, so a
+    freshly staged experiment silently comes back with no cross-sections and ``storevel = 0``
+    — i.e. no mass budget, and an inp that differs from the premier's for reasons that have
+    nothing to do with the experiment. Both phase-lag arms had to be hand-patched before
+    submission because of this; ``scripts/setup_sealed_premier.py`` carried the only copy of
+    the fix. Call this after :func:`finalize` on every staging path.
+    """
+    model_dir = Path(model_dir)
+    crs_src = ROOT / "data" / "flux_crosssections.crs"
+    kv = {"storevel": "1"}
+    if crs_src.exists():
+        shutil.copy2(crs_src, model_dir / "sfincs.crs")
+        kv["crsfile"] = "sfincs.crs"
+    else:  # never point crsfile at a file the solver cannot open
+        print(f"[warn] {crs_src} missing — staging without cross-sections")
+    set_inp_keys(model_dir / "sfincs.inp", kv)
+
+
+def finalize(
+    wcfg: WaveConfig,
+    base: BaseConfig,
+    sf: SfincsModel,
+    model_dir: Path,
+    sw: dict | None,
+) -> None:
+    """Phase 2 cell 54 — release handles, write, patch sfincs.inp, write ASCII.
+
+    Called for EVERY experiment (waves or not). When ``wcfg.wavemaker`` the
+    ``wvmfile`` key + ``sfincs.wvm`` are preserved (the notebook always stripped
+    them, which is why the wavemaker was disabled — do NOT strip here).
+    """
+    model_dir = Path(model_dir)
+
+    # Materialize forcing in memory, drop xarray's open-file cache, so every
+    # handle closes before write (avoids Errno 13 on /cache when re-writing a
+    # file this kernel still holds open).
+    for _c in (
+        sf.water_level,
+        sf.discharge_points,
+        sf.wind,
+        sf.pressure,
+        sf.precipitation,
+    ):
+        try:
+            if _c.data is not None:
+                _c.data.load()
+        except Exception:
+            pass
+    xr.backends.file_manager.FILE_CACHE.clear()
+    gc.collect()
+
+    sf.write()
+
+    inp = model_dir / "sfincs.inp"
+    text = inp.read_text()
+
+    # (a) latitude — dropped on write, so Coriolis silently disables without it.
+    if "\nlatitude" not in text:
+        text = text.replace(
+            "coriolis             = 1",
+            f"coriolis             = 1\nlatitude             = {base.latitude}",
+        )
+
+    # (b) strip orphan infiltration keys (component sets key but writes no file).
+    text = (
+        "\n".join(
+            ln
+            for ln in text.splitlines()
+            if not ln.strip().startswith(
+                ("infiltration_file", "infiltration_type", "scsfile")
+            )
+        )
+        + "\n"
+    )
+
+    # (c) waves: ensure SnapWave keys + write the ASCII boundary forcing.
+    if wcfg.use_waves:
+        if not wcfg.wavemaker:
+            # Drop any stale wavemaker key (only when this run has no wavemaker).
+            text = (
+                "\n".join(
+                    ln
+                    for ln in text.splitlines()
+                    if not ln.strip().startswith("wvmfile")
+                )
+                + "\n"
+            )
+        sw_keys = {
+            "snapwave": "1",
+            "snapwave_igwaves": str(int(wcfg.wave_igwaves)),
+            "snapwave_wind": str(int(wcfg.wave_wind)),
+            "snapwave_sector": str(wcfg.sector()),
+            "dtwave": str(wcfg.dtwave),
+            "storewavdir": "1",
+            "snapwave_bndfile": "snapwave.bnd",
+            "snapwave_bhsfile": "snapwave.bhs",
+            "snapwave_btpfile": "snapwave.btp",
+            "snapwave_bwdfile": "snapwave.bwd",
+            "snapwave_bdsfile": "snapwave.bds",
+        }
+        if wcfg.tune_physics:
+            sw_keys.update(
+                {
+                    "snapwave_alpha": str(wcfg.snapwave_alpha),
+                    "snapwave_gamma": str(wcfg.snapwave_gamma),
+                    "snapwave_hmin": str(wcfg.snapwave_hmin),
+                    "snapwave_dtheta": str(wcfg.snapwave_dtheta),
+                    "snapwave_fw": str(wcfg.snapwave_fw),
+                    "snapwave_niter": str(wcfg.snapwave_niter),
+                    "storefw": str(wcfg.storefw),
+                }
+            )
+        present = {ln.split("=")[0].strip() for ln in text.splitlines() if "=" in ln}
+        for k, v in sw_keys.items():
+            if k not in present:
+                text += f"{k:<20} = {v}\n"
+
+        # Remove stale files keyed to an old config (would crash the solver).
+        for stale in ("snapwave.upw", "snapwave.nc"):
+            (model_dir / stale).unlink(missing_ok=True)
+        if not wcfg.wavemaker:
+            (model_dir / "sfincs.wvm").unlink(missing_ok=True)
+
+        pts = sw["pts"]
+        np.savetxt(model_dir / "snapwave.bnd", pts, fmt="%.3f")
+        for fn, series in [
+            ("snapwave.bhs", sw["hs"]),
+            ("snapwave.btp", sw["tp"]),
+            ("snapwave.bwd", sw["wd"]),
+            ("snapwave.bds", sw["ds"]),
+        ]:
+            block = np.tile(np.asarray(series)[:, None], (1, len(pts)))
+            np.savetxt(
+                model_dir / fn,
+                np.column_stack([sw["t"], block]),
+                fmt=["%11.1f"] + ["%11.3f"] * len(pts),
+            )
+
+    inp.write_text(text)
