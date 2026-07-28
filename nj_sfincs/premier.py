@@ -57,15 +57,18 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+from nj_sfincs import domain as _domain
 from nj_sfincs.config import ROOT
 
 # ---------------------------------------------------------------------------
 # The premier
 # ---------------------------------------------------------------------------
 
-#: The adopted premier (Workstream O, 2026-07-14). Gauge err -0.10 m vs the surveyed
-#: crest; MOTF CSI 0.64, FAR 0.14. Faber engine + SnapWave + wind, on the sealed domain.
-PREMIER_NAME = "sealed_faber_waves"
+#: The adopted premier config (Workstream O, 2026-07-14). Faber engine + SnapWave +
+#: wind. The NAME is the same on every domain because it is the same configuration —
+#: what changes is the domain it stands on, which is why the fingerprint is checked
+#: separately below rather than being inferred from the run's name.
+PREMIER_NAME = "faber-waves-premier"
 
 #: The ONLY template new experiments may be staged from.
 SEALED_TEMPLATE = ROOT / "experiments" / "_template_sealed"
@@ -73,9 +76,6 @@ SEALED_TEMPLATE = ROOT / "experiments" / "_template_sealed"
 #: The pre-rebuild template: leaking Navesink, dammed Shark. Kept for provenance of the
 #: historical runs that sit on it. Nothing new should ever be built here.
 LEGACY_TEMPLATE = ROOT / "experiments" / "_template"
-
-#: The frozen mesh the sealed domain was built from (NJ_FROZEN_MESH).
-SEALED_FROZEN_MESH = "data/frozen_mesh_sealed"
 
 
 @dataclass(frozen=True)
@@ -91,14 +91,55 @@ class DomainFingerprint:
                 f"sha(z,mask)={self.sha_z_mask}")
 
 
-#: The sealed domain — region fixed at the leak's root + Shark eHydro inlet carve.
-SEALED = DomainFingerprint(547408, 1635, "45f4f74ca9a2347d")
+#: v1_monmouth — region fixed at the leak's root + Shark eHydro inlet carve. This is
+#: the domain the whole 2026-07 campaign (premier, tide-shift, wave-deep30 and their
+#: union) was measured on, and it is now FROZEN: nothing may change it.
+V1_MONMOUTH = DomainFingerprint(547408, 1635, "45f4f74ca9a2347d")
+
+#: v2_barnegat — v1 plus the southern lobe to Barnegat Inlet, built 2026-07-26 from
+#: data/frozen_mesh_v2_barnegat. 2.09x the faces of v1; v1's own footprint reproduces
+#: within it at 541,081 faces, so the north was not disturbed by the extension.
+V2_BARNEGAT = DomainFingerprint(1143357, 2164, "9ccbab0bc7a9fc0d")
 
 #: The pre-rebuild domain. Named so the error message can say *which* wrong domain it is.
 LEGACY = DomainFingerprint(547267, 1676, "ffc48087214bb848")
 
-KNOWN = {SEALED: "SEALED (leak fixed, Shark inlet carved)",
+#: The fingerprint each registered domain MUST have. Keyed by `domain.Domain.name`, so
+#: `NJ_DOMAIN` selects both the geography and the identity check in one move and the two
+#: cannot drift apart.
+#:
+#: This registry is why the file was generalised (2026-07-27). It used to hold a single
+#: SEALED constant, which meant every v2_barnegat directory audited "UNRECOGNISED" — an
+#: unimplemented feature that reads exactly like a real domain error, and therefore
+#: trains you to ignore the one alarm that matters.
+EXPECTED: dict[str, DomainFingerprint] = {
+    "v1_monmouth": V1_MONMOUTH,
+    "v2_barnegat": V2_BARNEGAT,
+}
+
+#: The frozen mesh each domain is built from (see BaseConfig.frozen_mesh, which derives
+#: the same path from the domain name).
+FROZEN_MESH = {
+    "v1_monmouth": "data/frozen_mesh_v1_monmouth",
+    "v2_barnegat": "data/frozen_mesh_v2_barnegat",
+}
+
+KNOWN = {V1_MONMOUTH: "v1_monmouth SEALED (leak fixed, Shark inlet carved)",
+         V2_BARNEGAT: "v2_barnegat (south to Barnegat Inlet, Manahawkin cut walled)",
          LEGACY: "LEGACY pre-rebuild (Navesink LEAKING, Shark inlet DAMMED)"}
+
+
+def expected() -> DomainFingerprint:
+    """The fingerprint the ACTIVE domain (``NJ_DOMAIN``) must have."""
+    name = _domain.active().name
+    if name not in EXPECTED:
+        raise KeyError(
+            f"domain {name!r} has no sealed fingerprint in premier.EXPECTED. Build its "
+            "frozen mesh, compute sha256 over (z, mask) with domain_fingerprint(), and "
+            "register it here BEFORE running anything on it — an unregistered domain "
+            "cannot be told apart from a corrupted one."
+        )
+    return EXPECTED[name]
 
 #: Shrewsbury tidal gauge, nudged 21 m into the channel so it samples water (zb -4.33 m)
 #: rather than the +1.46 m bank it started on. The old template still has the bank point,
@@ -127,9 +168,9 @@ def domain_fingerprint(model_dir: Path | str) -> DomainFingerprint:
 
 
 def is_sealed(model_dir: Path | str) -> bool:
-    """True iff ``model_dir`` sits on the sealed domain. False if it has no sfincs.nc."""
+    """True iff ``model_dir`` sits on the ACTIVE domain. False if it has no sfincs.nc."""
     try:
-        return domain_fingerprint(model_dir) == SEALED
+        return domain_fingerprint(model_dir) == expected()
     except FileNotFoundError:
         return False
 
@@ -155,16 +196,20 @@ def assert_sealed_domain(model_dir: Path | str, context: str = "") -> None:
     degraded result — it is a different planet, and its numbers must never reach a table.
     """
     where = f"{context}: " if context else ""
+    want = expected()
+    dom = _domain.active().name
     got = domain_fingerprint(model_dir)
-    if got != SEALED:
+    if got != want:
         raise WrongDomainError(
-            f"{where}{model_dir} is NOT on the sealed domain.\n"
-            f"    expected {SEALED}  <- {KNOWN[SEALED]}\n"
+            f"{where}{model_dir} is NOT on domain '{dom}'.\n"
+            f"    expected {want}  <- {KNOWN[want]}\n"
             f"    got      {got}"
             + (f"  <- {KNOWN[got]}" if got in KNOWN else "  <- UNRECOGNISED domain")
-            + f"\n  Stage from {SEALED_TEMPLATE.name}, not {LEGACY_TEMPLATE.name}.\n"
-              "  Results from a non-sealed domain are void: the Navesink leaks 92.5% of\n"
-              "  estuary inflow and Shark River Inlet is dammed shut (never floods).\n"
+            + f"\n  Stage from {SEALED_TEMPLATE.name}, not {LEGACY_TEMPLATE.name}, and\n"
+              f"  check NJ_DOMAIN (currently {dom!r}) and NJ_FROZEN_MESH agree.\n"
+              "  Results from the wrong domain are void: the pre-rebuild mesh leaks 92.5%\n"
+              "  of estuary inflow through the Navesink and Shark River Inlet is dammed\n"
+              "  shut (never floods).\n"
               "  NB the OPEN COAST barely moves between domains — a healthy Sandy Hook\n"
               "  number is NOT evidence the domain is right."
         )
@@ -186,8 +231,8 @@ def describe(model_dir: Path | str) -> str:
     label = KNOWN.get(fp, "UNRECOGNISED")
     obs = shrewsbury_obs_ok(model_dir)
     obs_s = {True: "gauge in-channel", False: "GAUGE STALE", None: "no sfincs.obs"}[obs]
-    flag = "OK  " if (fp == SEALED and obs is not False) else "BAD "
-    return f"  {flag}{str(model_dir):44s} {label:52s} {obs_s}"
+    flag = "OK  " if (fp == expected() and obs is not False) else "BAD "
+    return f"  {flag}{str(model_dir):44s} {label:60s} {obs_s}"
 
 
 def _main(argv: list[str] | None = None) -> int:
@@ -196,14 +241,16 @@ def _main(argv: list[str] | None = None) -> int:
     if not args:
         args = sorted(str(p) for p in (ROOT / "experiments").glob("*")
                       if (p / "sfincs.nc").exists())
+    dom = _domain.active().name
     print(f"PREMIER = {PREMIER_NAME}   template = {SEALED_TEMPLATE.name}")
-    print(f"sealed domain: {SEALED}\n")
+    print(f"NJ_DOMAIN = {dom}")
+    print(f"expected domain: {expected()}\n")
     bad = 0
     for a in args:
         line = describe(a)
         bad += line.lstrip().startswith("BAD")
         print(line)
-    print(f"\n{len(args) - bad}/{len(args)} on the sealed domain")
+    print(f"\n{len(args) - bad}/{len(args)} on domain '{dom}'")
     return 1 if bad else 0
 
 

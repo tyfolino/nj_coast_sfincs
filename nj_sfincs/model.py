@@ -25,6 +25,7 @@ from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import shapely
 import xarray as xr
 from hydromt import log
@@ -335,6 +336,52 @@ def build_static(base: BaseConfig, template_dir: Path, skip_subgrid: bool = Fals
     gc.collect()
 
 
+def check_waterlevel_support(sf: SfincsModel) -> int:
+    """Assert hydromt selected the number of water-level support points we expect.
+
+    Which gauges force the open boundary is decided by BUFFERING the region, so it
+    is a property of the DOMAIN, not of the forcing file. `noaa_sandy_nj.nc` holds
+    Battery, Atlantic City and Cape May; on v1_monmouth the 100 km buffer reaches
+    the first two, and on v2_barnegat it reaches all three — Cape May crosses in by
+    0.9 km. Nothing downstream notices: the run completes, the boundary is smooth,
+    and the arm is simply no longer the premier's 2-node construction.
+
+    Inserting a support point is not a cosmetic change here. It is what cost
+    `phaselag_composite_v2` +0.18 m of HWM bias in v1, and the failure mode is
+    silent by nature, so this is checked rather than remembered. Returns the count.
+    """
+    want = _domain.active().n_waterlevel_support
+    data = getattr(sf.water_level, "data", None)
+    if data is None or "bzs" not in data:
+        raise RuntimeError(
+            "water_level.create wrote no 'bzs' forcing "
+            f"(water_level.data = {data!r}). Refusing to continue: the support-point "
+            "count is exactly the thing that must not change silently between domains."
+        )
+    da = data["bzs"]
+    dims = [d for d in da.dims if d != "time"]
+    got = int(np.prod([da.sizes[d] for d in dims])) if dims else 1
+    where = ""
+    for cx, cy in (("x", "y"), ("lon", "lat")):
+        if cx in data.coords and cy in data.coords:
+            xs = np.atleast_1d(data[cx].values)
+            ys = np.atleast_1d(data[cy].values)
+            where = "  " + ", ".join(f"({a:.1f},{b:.1f})" for a, b in zip(xs, ys))
+            break
+    print(f"[bnd] {got} water-level support point(s){where}")
+    if want is not None and got != want:
+        raise RuntimeError(
+            f"water-level boundary has {got} support points, expected {want} for "
+            f"domain '{_domain.active().name}'.{where}\n"
+            "  hydromt selects gauges by buffering the region, so extending the "
+            "domain can pull an extra gauge in (or drop one) with no other symptom.\n"
+            "  If this is INTENDED, change Domain.waterlevel_buffer and "
+            "Domain.n_waterlevel_support together in nj_sfincs/domain.py and "
+            "re-baseline — an inserted node is a forcing change, not a free one."
+        )
+    return got
+
+
 def add_forcing(base: BaseConfig, sf: SfincsModel) -> None:
     """Phase 2 — window + physics flags and every compound forcing (no waves)."""
     sf.config.update(
@@ -357,6 +404,7 @@ def add_forcing(base: BaseConfig, sf: SfincsModel) -> None:
         buffer=base.waterlevel_buffer,
         merge=False,
     )
+    check_waterlevel_support(sf)
     sf.wind.create(wind="era5_nj")
     sf.pressure.create(press="era5_nj")
     sf.precipitation.create(
@@ -364,6 +412,100 @@ def add_forcing(base: BaseConfig, sf: SfincsModel) -> None:
     )
     sf.discharge_points.create(geodataset="usgs_sandy_discharge", merge=False)
     sf.quadtree_infiltration.create_cn(cn="cn_nj", antecedent_moisture=None, nrmax=2000)
+
+
+def _point_wave_bnd(wcfg: WaveConfig, base: BaseConfig, sf: SfincsModel, pts):
+    """Per-support-point wave forcing from an unstructured (time, node) point file.
+
+    Returns ``(t, hs, tp, wd, ds)`` where every array except ``t`` is shaped
+    ``(ntime, npoints)`` — one column per SnapWave support point, taken from that
+    point's NEAREST source node.
+
+    Two things here are load-bearing and neither is obvious:
+
+    **The clock is referenced to ``base.tref``, not to the file's first timestamp.**
+    The ERA5 path above computes ``t - t[0]`` and gets away with it only because
+    `era5_waves_nj.nc` happens to start exactly at tref. A source padded earlier — CORA
+    is built with a day of lead-in so interpolation never extrapolates at an endpoint —
+    would silently shift the entire wave forcing by that pad. A 24 h offset on a storm
+    whose peak is the whole point would not announce itself; it would just score badly.
+
+    **Nearest-node lookup is checked, not trusted.** The distance to each chosen node
+    and its source depth are printed and asserted, because a lookup that quietly lands
+    on an estuarine or dry node produces a plausible-looking boundary file.
+    """
+    import pyproj
+
+    path = Path(wcfg.wave_point_dataset)
+    if not path.is_absolute():
+        path = ROOT / path
+    if not path.exists():
+        raise FileNotFoundError(
+            f"wave_point_dataset {path} not found — build it with "
+            "scripts/build_cora_waves.py"
+        )
+    ds = xr.open_dataset(path)
+
+    # Source nodes are lon/lat; support points are in the model's projected CRS.
+    epsg = _domain.active().epsg
+    tf = pyproj.Transformer.from_crs(epsg, 4326, always_xy=True)
+    plon, plat = tf.transform(pts[:, 0], pts[:, 1])
+
+    slon = np.asarray(ds["lon"].values, float)
+    slat = np.asarray(ds["lat"].values, float)
+    sdep = np.asarray(ds["depth"].values, float) if "depth" in ds else None
+
+    idx, dist = [], []
+    for lo, la in zip(plon, plat):
+        # Local-scale planar distance is plenty at <1 km and avoids a geodesic call
+        # per node; cos(lat) keeps the longitude degree honest.
+        d = np.hypot((slon - lo) * np.cos(np.deg2rad(la)), slat - la) * 111_000.0
+        j = int(np.argmin(d))
+        idx.append(j)
+        dist.append(d[j])
+    idx = np.asarray(idx)
+    dist = np.asarray(dist)
+
+    print(f"[waves] point forcing from {path.name}: {ds.sizes['node']} source nodes, "
+          f"{len(idx)} support points")
+    for k, (lo, la, j, dk) in enumerate(zip(plon, plat, idx, dist)):
+        dep = f"{sdep[j]:6.1f} m" if sdep is not None else "   n/a"
+        print(f"[waves]   pt {k}: lon {lo:8.4f} lat {la:7.4f} -> node {j:6d} "
+              f"({dk/1000:5.2f} km, source depth {dep})")
+    if dist.max() > 5_000.0:
+        raise RuntimeError(
+            f"nearest source node is {dist.max()/1000:.1f} km from a support point "
+            "(limit 5 km). The wave file does not cover this boundary; extend the "
+            "search box in scripts/build_cora_waves.py rather than accepting it."
+        )
+
+    # Clip to the run window. Starting at tref keeps every emitted time >= 0, and the
+    # pad before tref exists only so the source brackets the window.
+    times = pd.to_datetime(ds["time"].values)
+    keep = times >= pd.Timestamp(base.tref)
+    if not keep.any():
+        raise RuntimeError(f"{path.name} has no samples at/after tref {base.tref}")
+    times = times[keep]
+    t = (times - pd.Timestamp(base.tref)).total_seconds().to_numpy(float)
+
+    out = []
+    for var in ("hs", "tp", "wd"):
+        a = np.asarray(ds[var].values, float)[np.asarray(keep)][:, idx]
+        if not np.isfinite(a).all():
+            raise RuntimeError(
+                f"non-finite {var} in the selected {path.name} nodes — the builder is "
+                "supposed to drop those; do not write NaN into a SnapWave boundary."
+            )
+        out.append(a)
+    hs, tp, wd = out
+    dspread = np.full_like(hs, 30.0)
+
+    print(f"[waves] window {times[0]} .. {times[-1]}  (t = {t[0]:.0f} .. {t[-1]:.0f} s "
+          f"from tref {base.tref})")
+    print(f"[waves] peak Hs per point: "
+          + ", ".join(f"{v:.2f}" for v in hs.max(axis=0))
+          + f"   alongshore spread {np.ptp(hs.max(axis=0)):.2f} m")
+    return t, hs, tp, wd, dspread
 
 
 def add_waves(wcfg: WaveConfig, base: BaseConfig, sf: SfincsModel) -> dict:
@@ -457,18 +599,24 @@ def add_waves(wcfg: WaveConfig, base: BaseConfig, sf: SfincsModel) -> dict:
         ]
     )
 
-    # Uniform alongshore forcing from the nearest valid ERA5 wave node.
-    _ew = sf.data_catalog.get_rasterdataset(wcfg.wave_geodataset)
-    _node = _ew.sel(
-        x=wcfg.wave_era5_node[0], y=wcfg.wave_era5_node[1], method="nearest"
-    )
-    snapwave_t = (_node["time"].values - _node["time"].values[0]) / np.timedelta64(
-        1, "s"
-    )
-    snapwave_hs = _node["hs"].values
-    snapwave_tp = _node["tp"].values
-    snapwave_wd = _node["wd"].values
-    snapwave_ds = np.full_like(snapwave_hs, 30.0)  # ERA5 has no dir-spreading; 30 deg
+    if wcfg.wave_point_dataset is not None:
+        snapwave_t, snapwave_hs, snapwave_tp, snapwave_wd, snapwave_ds = _point_wave_bnd(
+            wcfg, base, sf, snapwave_pts
+        )
+    else:
+        # Uniform alongshore forcing from the nearest valid ERA5 wave node.
+        _ew = sf.data_catalog.get_rasterdataset(wcfg.wave_geodataset)
+        _node = _ew.sel(
+            x=wcfg.wave_era5_node[0], y=wcfg.wave_era5_node[1], method="nearest"
+        )
+        snapwave_t = (_node["time"].values - _node["time"].values[0]) / np.timedelta64(
+            1, "s"
+        )
+        snapwave_hs = _node["hs"].values
+        snapwave_tp = _node["tp"].values
+        snapwave_wd = _node["wd"].values
+        # ERA5 has no directional spreading; 30 deg
+        snapwave_ds = np.full_like(snapwave_hs, 30.0)
 
     # Optional ocean-side wavemaker (native hydromt call; writes sfincs.wvm).
     if wcfg.wavemaker:
@@ -654,7 +802,20 @@ def finalize(
             ("snapwave.bwd", sw["wd"]),
             ("snapwave.bds", sw["ds"]),
         ]:
-            block = np.tile(np.asarray(series)[:, None], (1, len(pts)))
+            arr = np.asarray(series)
+            # 1-D => one series broadcast to every support point (the ERA5 path, whose
+            # 31 km cell cannot resolve the boundary anyway). 2-D => already one column
+            # PER POINT (the point-source path), so it must NOT be tiled — tiling a
+            # 2-D array here would silently emit a garbage-shaped boundary file.
+            if arr.ndim == 1:
+                block = np.tile(arr[:, None], (1, len(pts)))
+            elif arr.shape == (len(sw["t"]), len(pts)):
+                block = arr
+            else:
+                raise ValueError(
+                    f"{fn}: wave series has shape {arr.shape}, expected "
+                    f"({len(sw['t'])},) or ({len(sw['t'])}, {len(pts)})"
+                )
             np.savetxt(
                 model_dir / fn,
                 np.column_stack([sw["t"], block]),

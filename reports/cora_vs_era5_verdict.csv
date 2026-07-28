@@ -1,0 +1,3 @@
+arm,n_max,bias_max,rmse_max,n_median,bias_median,rmse_median
+faber-waves-premier,60,0.5097,1.3492,60,-0.2487,0.4937
+wave-cora,60,0.4613,1.2933,60,-0.2909,0.5061

@@ -236,7 +236,18 @@ def _inp_value(inp: Path, key: str) -> str:
     raise KeyError(f"{key!r} not found in {inp}")
 
 
-def load_floodmap(model_dir: Path, force: bool = False):
+#: In-process memo for ``load_floodmap``, keyed by (run dir, floodmap tif mtime).
+#: Bounded, because each entry pins ~2 GB of de-rotated raster on a 1.14 M-face domain.
+_FLOODMAP_MEMO: "dict[tuple, tuple]" = {}
+_FLOODMAP_MEMO_MAX = 4
+
+
+def load_floodmap_cache_clear():
+    """Drop the in-process ``load_floodmap`` memo (frees the pinned rasters)."""
+    _FLOODMAP_MEMO.clear()
+
+
+def load_floodmap(model_dir: Path, force: bool = False, memo: bool = True):
     """Open the run read-only and downscale zsmax onto the L3 subgrid DEM.
 
     Returns ``(mod, da_hmax, da_dep)`` — the model handle plus the north-up
@@ -249,8 +260,30 @@ def load_floodmap(model_dir: Path, force: bool = False):
     Staleness is the mtime comparison, not existence: a re-run of the same experiment
     rewrites sfincs_map.nc and must invalidate the tif. ``force=True`` rebuilds
     regardless (use it if a cache is suspect).
+
+    ``memo`` — THE IN-PROCESS CACHE (2026-07-28)
+        The on-disk tif skips the *downscale*, but every call still paid for the two
+        expensive array ops below: ``rio.reproject`` to de-rotate a 14596x11684 hmax
+        raster (both tifs are stored with ~0.76 deg of shear) and ``reproject_match``
+        to pull the 29192x23368 3.125 m dep raster onto it. On v2_barnegat that is
+        ~2 min a call — and the viz notebook made SEVEN of them, because
+        ``plot_motf_panels`` and ``plot_hwm_residual_panels`` each re-derive every run
+        independently. Memoising on (dir, tif mtime) makes repeats free and roughly
+        halves a full notebook run.
+
+        ⚠️ The cached arrays are SHARED, not copied — copying would double ~2 GB per
+        entry. Callers must treat them as READ-ONLY; every caller in this repo does.
+        Pass ``memo=False`` for an independent copy, or call
+        ``load_floodmap_cache_clear()`` to release the memory.
     """
     model_dir = Path(model_dir).resolve()
+    key = None
+    if memo and not force:
+        fm_p = model_dir / "floodmap_hmax_lev3.tif"
+        # mtime in the key means a re-run (which rewrites the tif) self-invalidates.
+        key = (model_dir, fm_p.stat().st_mtime if fm_p.is_file() else None)
+        if key in _FLOODMAP_MEMO:
+            return _FLOODMAP_MEMO[key]
     mod = SfincsModel(str(model_dir), data_libs=[str(DATA / "data_catalog.yml")], mode="r")
     read_output(mod)
 
@@ -281,7 +314,12 @@ def load_floodmap(model_dir: Path, force: bool = False):
     da_dep = da_dep.rio.reproject_match(da_hmax)
     da_hmax = da_hmax.where(da_dep.values > -0.5)      # drop deep ocean
     da_hmax.name = "hmax"
-    return mod, da_hmax, da_dep
+    out = (mod, da_hmax, da_dep)
+    if key is not None:
+        if len(_FLOODMAP_MEMO) >= _FLOODMAP_MEMO_MAX:
+            _FLOODMAP_MEMO.pop(next(iter(_FLOODMAP_MEMO)))   # FIFO, bounded memory
+        _FLOODMAP_MEMO[key] = out
+    return out
 
 
 def gauge_peak_error(mod, data_dir: Path = DATA) -> dict:
@@ -649,7 +687,18 @@ def source_phase_lag(geodataset: str, ref_lonlat: tuple[float, float] = (-74.009
     return round(_xcorr_lag_minutes(a, b, dt_s), 1)
 
 
-def hwm_metrics(da_hmax, da_dep, data_dir: Path = DATA) -> dict:
+#: How a mark's modelled water level is reduced from the cells in its search window.
+#: This is a load-bearing physical choice, not a formatting one — see the
+#: ``estimator`` section of ``hwm_metrics``' docstring.
+HWM_ESTIMATORS = ("median", "max", "nearest")
+HWM_ESTIMATOR_DEFAULT = "median"
+HWM_RADIUS_M = 50.0
+
+
+def hwm_metrics(da_hmax, da_dep, data_dir: Path = DATA,
+                hwm_ids: "set | list | None" = None,
+                estimator: str = HWM_ESTIMATOR_DEFAULT,
+                radius_m: float = HWM_RADIUS_M) -> dict:
     """USGS High Water Mark residuals: RMSE/bias/within-0.5 m (headline q<=2).
 
     Two families of keys are returned, and the difference between them matters:
@@ -678,17 +727,86 @@ def hwm_metrics(da_hmax, da_dep, data_dir: Path = DATA) -> dict:
     flooding). Never lead with either alone. Always read ``hwm_n_dry`` alongside
     any bias, and treat a CHANGE in the scored-mark count between two runs as
     invalidating the comparison.
+
+    ``hwm_ids`` — THE BRIDGE RESCORE (2026-07-27)
+        Restrict scoring to these ``hwm_id`` values. This exists because extending
+        the domain to Barnegat took the mark file from 31 marks to 95, and that alone
+        moves every pooled statistic: a v2 number and a v1 number computed over
+        different mark sets are not the same measurement, however similar the model.
+        The docstring above already says a change in the scored-mark count invalidates
+        a comparison — going 31 -> 95 is that, at the largest scale it has happened.
+
+        v1's 31 marks are an EXACT subset of v2's 95 by ``hwm_id`` (31/31 overlap), so
+        the bridge is a true restriction and not a spatial re-match. Use it for any
+        v2-vs-v1 claim; use the full 95 for anything about v2 on its own terms.
+
+    ``estimator`` — HOW THE WINDOW IS REDUCED (2026-07-28, default CHANGED)
+        A mark is scored against the cells within ``radius_m``, because the mark's
+        COORDINATE is uncertain: 94 of 95 Sandy marks (and all 64 q<=2 ones) were
+        located by *"Map (digital or paper)"*, the lowest-accuracy horizontal method
+        USGS STN records. (``quality`` is the VERTICAL accuracy, +/-0.05 ft at q=1;
+        it says nothing about where the mark is.) So a window is justified.
+
+        What is NOT justified is reducing that window with ``max``, which was the
+        behaviour until 2026-07-28. A maximum is one-sided: adding candidates can
+        only push it up, so it is **unbounded in the radius** and has no converged
+        value. Measured on the v1 premier, 19 q<=2 marks::
+
+            radius   0 m   12.5    25     50     75    100    150
+            max    -0.134 +0.007 +0.09  +0.318 +0.51 +0.69  +1.09
+            median -0.134 -0.147 -0.147 -0.214 -0.21 -0.21  -0.20
+
+        50 m was simply where the loop stopped, and the argmax sat on the window's
+        OUTER RING for essentially every mark — i.e. it was finding a ditch 50 m away,
+        not the wall the mud line is on. Worse, ``max`` makes worse positional accuracy
+        produce a WETTER-looking model, which is backwards.
+
+        Given "the mark is somewhere in this box", the defensible reduction is a
+        CENTRAL statistic: ``median``. It is radius-stable (<=0.07 m of swing vs
+        ``max``'s 1.10 m) and it makes the mark types cohere physically — mud lines
+        -0.19, seed -0.20, debris -0.46, the last carrying the wave runup that a
+        stillwater ``zsmax`` cannot reproduce. Under ``max`` even mud lines, the
+        cleanest stillwater indicator, read an implausible +0.59 m.
+
+        ``nearest`` (the nearest wet cell) is offered for diagnosis but is NOT
+        defensible here: it trusts the coordinate to one 6.25 m cell, which the survey
+        method says you cannot do.
+
+        ⚠️ CONSEQUENCE FOR THE CAMPAIGN. Every level arm removes water, so the SIGN of
+        the bias decides the ranking outright. Under ``max`` the premier is +0.32 (too
+        wet) and arms that remove water win; under ``median`` it is -0.21 (slightly dry)
+        and the same arms lose. The ranking inverts exactly. Do not compare any number
+        computed under one estimator with one computed under another — the emitted
+        ``hwm_estimator`` / ``hwm_radius_m`` keys exist so a CSV always says which.
     """
+    if estimator not in HWM_ESTIMATORS:
+        raise ValueError(
+            f"unknown HWM estimator {estimator!r}; expected one of {HWM_ESTIMATORS}. "
+            "This is not a cosmetic argument — it decides the SIGN of the bias."
+        )
     GROUND_CAP = 0.5
     hwm = gpd.read_file(str(data_dir / "validation" / "sandy_hwms.geojson")).to_crs(
         da_dep.rio.crs
     )
+    if hwm_ids is not None:
+        want = {str(i) for i in hwm_ids}
+        before = len(hwm)
+        hwm = hwm[hwm["hwm_id"].astype(str).isin(want)].reset_index(drop=True)
+        missing = want - set(hwm["hwm_id"].astype(str))
+        if missing:
+            raise ValueError(
+                f"bridge rescore asked for {len(want)} hwm_ids but "
+                f"{len(missing)} are absent from this domain's mark file: "
+                f"{sorted(missing)[:10]}. A partial bridge is not a bridge — it is a "
+                "third mark set, comparable to neither side."
+            )
+        print(f"[hwm] BRIDGE RESCORE: restricted {before} -> {len(hwm)} marks")
     depth, dep_arr, wse = da_hmax.values, da_dep.values, (da_dep + da_hmax).values
     if depth.ndim == 3:
         depth, wse, dep_arr = depth[0], wse[0], dep_arr[0]
     T = da_dep.rio.transform()
     ny, nx = wse.shape
-    rad = int(round(50 / abs(T.a)))
+    rad = int(round(radius_m / abs(T.a)))
 
     obs = hwm["elev_m"].values
     qual = hwm["quality"].values.astype(float)
@@ -697,16 +815,22 @@ def hwm_metrics(da_hmax, da_dep, data_dir: Path = DATA) -> dict:
     for k, (X, Y) in enumerate(zip(hwm.geometry.x.values, hwm.geometry.y.values)):
         col, row = int((X - T.c) / T.a), int((Y - T.f) / T.e)
         if 0 <= row < ny and 0 <= col < nx:
-            sl = (
-                slice(max(0, row - rad), row + rad + 1),
-                slice(max(0, col - rad), col + rad + 1),
-            )
+            r0, c0 = max(0, row - rad), max(0, col - rad)
+            sl = (slice(r0, row + rad + 1), slice(c0, col + rad + 1))
             ws, hh, dd = wse[sl], depth[sl], dep_arr[sl]
             if np.isfinite(dd).any():
                 mod_ground[k] = np.nanmin(dd)   # most generous: the lowest bed nearby
             flooded = (hh >= DEPTH_MIN) & (dd <= obs[k] + GROUND_CAP)
             if flooded.any():
-                mod_wse[k] = np.nanmax(np.where(flooded, ws, np.nan))
+                vals = ws[flooded]
+                if estimator == "median":
+                    mod_wse[k] = np.nanmedian(vals)
+                elif estimator == "max":
+                    mod_wse[k] = np.nanmax(vals)
+                else:  # "nearest" — the wet cell closest to the mark's own pixel
+                    rr, cc = np.nonzero(flooded)
+                    j = int(np.argmin((rr - (row - r0)) ** 2 + (cc - (col - c0)) ** 2))
+                    mod_wse[k] = ws[rr[j], cc[j]]
 
     wet = np.isfinite(mod_wse)
     resid = mod_wse - obs
@@ -720,6 +844,10 @@ def hwm_metrics(da_hmax, da_dep, data_dir: Path = DATA) -> dict:
     rs = resid_s[head_s]
 
     result = {
+        # WHICH measurement this row is. Never compare a bias across differing values
+        # of these two — the estimator alone flips the sign (see the docstring).
+        "hwm_estimator": estimator,
+        "hwm_radius_m": float(radius_m),
         # headline (scored): every q<=2 mark on the grid counts
         "hwm_n_scored": int(head_s.sum()),
         "hwm_n_dry_scored": int((head_s & ~wet).sum()),
@@ -820,7 +948,9 @@ def sandy_hook_bay_hm0(mod) -> dict:
 
 
 def evaluate(model_dir: Path, data_dir: Path = DATA,
-             gallery_tif: Path | None = None) -> dict:
+             gallery_tif: Path | None = None,
+             hwm_ids: "set | list | None" = None,
+             hwm_estimator: str = HWM_ESTIMATOR_DEFAULT) -> dict:
     """Full metric row for one experiment. Robust: missing pieces → NaN.
 
     If ``gallery_tif`` is given, the *masked* (permanent water dropped, north-up)
@@ -841,7 +971,7 @@ def evaluate(model_dir: Path, data_dir: Path = DATA,
         (shrewsbury_gauge_peak, (mod,)),
         (tidal_range_metric, (model_dir, data_dir)),
         (gauge_phase_lag, (mod, model_dir, data_dir)),
-        (hwm_metrics, (da_hmax, da_dep, data_dir)),
+        (hwm_metrics, (da_hmax, da_dep, data_dir, hwm_ids, hwm_estimator)),
         (motf_metrics, (da_hmax, da_dep, data_dir)),
         (sandy_hook_bay_hm0, (mod,)),
     ]:

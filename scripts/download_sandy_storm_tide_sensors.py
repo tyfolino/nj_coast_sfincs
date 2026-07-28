@@ -41,9 +41,21 @@ OUT = OUT_DIR / "sandy_storm_tide_nj.nc"
 STN = "https://stn.wim.usgs.gov/STNServices"
 FT_TO_M = 0.3048
 
-# In-domain SSS wave/water-level instruments (open coast, Monmouth Beach, 40.372 N).
-# 2257 is the barometric (BP) unit -> skip (air pressure, not water level).
-INSTRUMENTS = [2258, 2259]   # SSS-NJ-MON-002WV / 003WV
+# In-domain SSS wave/water-level instruments.
+# 2257 / 2261 are the barometric (BP) units -> skip (air pressure, not water level).
+#
+# ⚠️ 2260 ADDED 2026-07-27 for v2_barnegat. The domain registry has declared an
+# `usgs_stormtide_barnegat_inlet` observation point since the domain was built, but
+# this file only ever carried the two Monmouth Beach units — so the gauge existed in
+# sfincs.obs, the model dutifully wrote a series for it, and there was nothing to
+# score it against. A declared-but-unfed gauge is worse than an absent one: it looks
+# like coverage. Instrument IDs are resolved from the STN API by `location_description`
+# (Events/24/Instruments.json); the records carry no lat/lon, only a site_id.
+INSTRUMENTS = [
+    2258,  # SSS-NJ-MON-002WV  Monmouth Beach, open coast (40.372 N)
+    2259,  # SSS-NJ-MON-003WV  Monmouth Beach, open coast
+    2260,  # SSS-NJ-OCE-001WV  Barnegat Inlet (site 7727) — v2_barnegat only
+]
 
 
 def fetch_sensor(iid: int):

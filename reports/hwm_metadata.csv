@@ -1,0 +1,96 @@
+hwm_id,elev_m,quality,quality_txt,hwm_type,hcollect,hcollect_id,hdatum,vcollect,height_above_gnd,stillwater,environment,waterbody,site_id,lon,lat,description
+6098,3.932,2,Good: +/- 0.10 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7286,-74.256949,40.461606,on sandy slope
+6099,4.816,4,Poor: +/- 0.40 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7287,-74.244733,40.457899,asphalt sidewalk
+6101,4.084,3,Fair: +/- 0.20 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7289,-74.299872,40.500586,sidewalk on southeast corner of building
+6102,3.932,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7290,-74.288275,40.509939,seed/mud line on inside door at southwest corner of AT&T building
+6103,3.871,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7291,-74.261783,40.509297,seed/mud line on north wall of utility room in parking garage
+6106,3.383,1,Excellent: +/- 0.05 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7294,-74.00268,40.4622,inside wall of utility room
+6111,4.145,1,Excellent: +/- 0.05 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7299,-74.276553,40.501011,seed and mud line on west side entrance of red brick city building on 2nd St
+6112,4.054,1,Excellent: +/- 0.05 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7300,-74.277331,40.485272,seed and sud line on insid eof house on Augusta St
+6113,3.993,3,Fair: +/- 0.20 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7286,-74.256953,40.4616,40 ft south of Route 35 and 120 ft northeast of entrance to Viking Marina entrance at southeast end of bridge
+6114,4.145,1,Excellent: +/- 0.05 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7301,-74.24205,40.452683,seed and mud line on upper level exterior door on building on Route 35
+6116,3.962,2,Good: +/- 0.10 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7303,-74.231144,40.443922,"100 ft southeast of ""Welcome to Aberdeen Township"" sign and directly behind powerpole JC209ABT"
+6117,3.505,3,Fair: +/- 0.20 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7304,-73.980033,40.316123,on a 40 degree sloped yard
+6118,5.791,3,Fair: +/- 0.20 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7305,-73.978439,40.306867,mowed grass lawn
+6119,5.304,3,Fair: +/- 0.20 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7306,-73.984877,40.275984,front yard
+6120,4.45,4,Poor: +/- 0.40 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7307,-73.985726,40.276211,mowed grass area
+6121,4.176,2,Good: +/- 0.10 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7308,-73.991972,40.257,sidewalk and lawn of front yard
+6122,3.139,2,Good: +/- 0.10 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7309,-74.008746,40.231993,concrete sidewalk
+6123,3.536,2,Good: +/- 0.10 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7310,-73.99969,40.227611,on empty grass lot
+6124,3.2,2,Good: +/- 0.10 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7311,-74.013093,40.214689,on concrete parking lot
+6125,3.383,4,Poor: +/- 0.40 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7312,-74.012808,40.207182,mowed grassy park lawn
+6126,3.627,3,Fair: +/- 0.20 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7313,-74.020323,40.196067,
+6127,3.383,2,Good: +/- 0.10 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7314,-74.059438,40.188668,mowed field
+6128,3.658,3,Fair: +/- 0.20 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7315,-74.018682,40.172185,mowed empty lot
+6129,2.774,2,Good: +/- 0.10 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7316,-74.029133,40.143757,mowed yard
+6130,2.743,2,Good: +/- 0.10 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7317,-74.042059,40.140938,mowed grass area
+6131,2.865,4,Poor: +/- 0.40 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7318,-74.109873,40.137826,mowed grass
+6132,3.81,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7319,-74.174209,40.450971,exterior of house
+6133,1.554,3,Fair: +/- 0.20 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7320,-74.142222,40.448188,exterior wall of steel shipping container
+6134,3.414,3,Fair: +/- 0.20 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7321,-74.069873,40.351754,on asphalt parking lot
+6135,3.322,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7322,-74.011914,40.37776,in sheltered corner of building on exterior of corrogated siding
+6136,4.602,4,Poor: +/- 0.40 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7323,-74.016724,40.387966,mowed grass
+6137,2.926,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7324,-74.005933,40.311851,exterior wall
+6138,3.231,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7325,-73.974661,40.373442,seed and mud line on interior wall of house
+6139,3.322,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7326,-73.976772,40.397101,interior wall of garage
+6140,3.536,1,Excellent: +/- 0.05 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7327,-74.011128,40.470936,interior of concrete bunker
+6141,3.414,2,Good: +/- 0.10 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7328,-74.08563,40.35337,pond embankment
+6142,3.444,2,Good: +/- 0.10 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7329,-74.07792,40.35713,in grass of public access area on Navesink River
+6143,3.353,2,Good: +/- 0.10 ft,Mud,Map (digital or paper),4,NAD83,,,,Coastal,,7330,-73.99415,40.40464,inside shop on wall
+6144,3.322,2,Good: +/- 0.10 ft,Mud,Map (digital or paper),4,NAD83,,,,Coastal,,7331,-73.98292,40.4002,in basement of house
+6145,3.383,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7331,-73.98315,40.40011,seed and mud line on garage door
+6146,3.353,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7331,-73.98302,40.40027,seed and mud line on west face of porch
+6147,3.231,4,Poor: +/- 0.40 ft,Mud,Map (digital or paper),4,NAD83,,,,Coastal,,7331,-73.9832,40.40036,door on south side of house
+6148,3.048,3,Fair: +/- 0.20 ft,Mud,Map (digital or paper),4,NAD83,,,,Coastal,,7332,-73.97424,40.3626,interior wall of business
+6149,3.109,3,Fair: +/- 0.20 ft,Mud,Map (digital or paper),4,NAD83,,,,Coastal,,7332,-73.97433,40.36273,on interior wall of business
+6150,3.078,2,Good: +/- 0.10 ft,Mud,Map (digital or paper),4,NAD83,,,,Coastal,,7333,-73.97366,40.35753,on inside of window
+6151,3.566,4,Poor: +/- 0.40 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7334,-74.03934,40.41679,fence
+6152,2.926,3,Fair: +/- 0.20 ft,Mud,Map (digital or paper),4,NAD83,,,,Coastal,,7335,-74.09671,40.42259,mud and seed line on ouside wall of business
+6153,3.566,2,Good: +/- 0.10 ft,Mud,Map (digital or paper),4,NAD83,,,,Coastal,,7336,-74.05932,40.42251,mud and seed line on residence door
+6154,3.566,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7337,-74.1131,40.43239,on marsh overflow retaining wall
+6155,1.585,1,Excellent: +/- 0.05 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7338,-74.136228,40.442464,"upstream, right of wooden walkway bridge"
+6156,1.554,3,Fair: +/- 0.20 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7339,-74.146589,40.447297,on wooden fence post
+6157,3.658,1,Excellent: +/- 0.05 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7340,-74.159472,40.442903,on wall inside house
+6158,3.962,1,Excellent: +/- 0.05 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7341,-74.163189,40.446467,on exterior of house near window screen
+6159,4.42,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7342,-74.209531,40.445394,on exterior of northeast corner of house
+6160,4.42,1,Excellent: +/- 0.05 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7342,-74.209389,40.445417,exterior of northwest corner of house
+6161,4.084,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7343,-74.223417,40.447194,on tree
+6162,3.962,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7344,-74.22745,40.44172,
+6163,2.896,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7345,-73.97504,40.34079,seed and mud line in garage
+6164,2.926,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7346,-73.99952,40.31362,seed and mud line on outside of garage door
+6165,2.957,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7347,-74.02939,40.33405,seed and mud line on fence
+6166,2.957,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7347,-74.02939,40.33379,seed and mud line inside garage
+6167,3.078,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7348,-74.042886,40.123881,on side of house
+6168,2.865,1,Excellent: +/- 0.05 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7349,-74.038225,40.117922,on side of house
+6169,3.658,1,Excellent: +/- 0.05 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7350,-74.048942,40.111925,on side of house
+6170,2.835,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7351,-74.0537,40.105747,on northwest side of diner on window
+6171,2.652,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7352,-74.051328,40.099828,next to office door inside garage bay of Garden State Marina
+6172,3.901,1,Excellent: +/- 0.05 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7353,-74.231239,40.444533,on inside stairway of business on Route 35
+6173,3.962,2,Good: +/- 0.10 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7353,-74.231144,40.443922,"100 ft southeast of ""Welcome to Aberdeen Township"" sign and directly behind powerpole JC209ABT"
+6174,2.073,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7354,-74.04434,40.07279,on picket fence
+6175,1.951,1,Excellent: +/- 0.05 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7355,-74.05665,40.06821,on garage door on Shore Dr
+6176,1.341,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7356,-74.200861,39.765667,on retaining wall behind house on 11th St
+6177,2.225,3,Fair: +/- 0.20 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7357,-74.182814,39.791978,on foudation of Bayview condo at Vessel St
+6178,1.768,3,Fair: +/- 0.20 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7358,-74.184544,39.828322,on white fence east of house
+6179,1.829,4,Poor: +/- 0.40 ft,Debris,Phone/Car GPS,3,NAD83,,,,Coastal,,7359,-74.194333,39.835583,"on downstream, left bank of culvert in grass area in front of Forked River State Marina"
+6180,1.615,3,Fair: +/- 0.20 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7360,-74.126872,39.907622,on back of flower box wall in the backyard
+6181,1.585,3,Fair: +/- 0.20 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7361,-74.136458,39.707936,on garage door
+6182,1.615,1,Excellent: +/- 0.05 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7362,-74.110119,39.761131,on wall inside store
+6183,1.981,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7363,-74.140625,39.929856,on house
+6184,2.042,4,Poor: +/- 0.40 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7364,-74.166767,39.940303,on southwest corner of insection of Riverside Dr and Hillside Ave
+6185,1.92,1,Excellent: +/- 0.05 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7365,-74.084258,39.9136,on inside of window
+6186,1.89,1,Excellent: +/- 0.05 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7366,-74.08015,39.92125,on inside of window
+6187,2.103,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7367,-74.070836,39.988308,on front of house
+6188,2.652,1,Excellent: +/- 0.05 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7368,-74.072847,39.958847,on front of house
+6189,2.134,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7369,-74.051733,40.036619,on garage door
+6190,2.134,4,Poor: +/- 0.40 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7370,-74.1102,40.0566,on lawn
+6191,2.225,4,Poor: +/- 0.40 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7371,-74.145053,40.018914,in parking lot
+6192,2.164,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7372,-74.092192,40.059575,on side of house
+6193,1.859,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7373,-74.0585694444444,40.0692027777778,on siding of house at the south corner of Shore Blvd and Rue Lafayette
+6194,1.951,4,Poor: +/- 0.40 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7374,-74.0667472222222,40.0827138888889,"in yard behind apartments, between grass and water"
+6195,2.896,2,Good: +/- 0.10 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7375,-74.086203,40.095386,on patio wall
+6406,3.993,2,Good: +/- 0.10 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7548,-74.25388,40.50242,on grass
+6407,4.023,3,Fair: +/- 0.20 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7549,-74.2412,40.49965,on side of fence
+6408,4.023,2,Good: +/- 0.10 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7069,-74.231087,40.502354,on lawn
+6409,3.962,3,Fair: +/- 0.20 ft,Debris,Map (digital or paper),4,NAD83,,,,Coastal,,7550,-74.19444,40.51544,on lawn
+6411,3.993,1,Excellent: +/- 0.05 ft,Seed line,Map (digital or paper),4,NAD83,,,,Coastal,,7552,-74.210355,40.511529,wooded guard rail

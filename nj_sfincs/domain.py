@@ -136,6 +136,34 @@ class Domain:
     hwm_rules: tuple[BasinRule, ...] = ()
     # Default map window for the diagnostic panels (xmin, xmax, ymin, ymax).
     plot_window: tuple[float, float, float, float] | None = None
+    # ── Water-level boundary support points ──────────────────────────────────
+    # hydromt selects the forcing gauges by BUFFERING the model region, so the
+    # number of support points is a function of the DOMAIN, not of the forcing
+    # file. That makes a single shared buffer silently domain-dependent, and this
+    # one very nearly bit us:
+    #
+    #   `noaa_sandy_nj.nc` has always carried THREE gauges — Battery (8518750),
+    #   Atlantic City (8534720) and Cape May (8536110). On v1_monmouth, Cape May
+    #   sits 150.7 km from the region, outside the 100 km buffer, so the premier's
+    #   boundary is the 2-node Battery->AC interpolation everything in the campaign
+    #   was measured against. On v2_barnegat the region reaches lat 39.70 and Cape
+    #   May falls to **99.1 km** — INSIDE the same buffer by 0.9 km. The "premier
+    #   configuration" would have quietly become a 3-node boundary.
+    #
+    # That is not a small thing here. Inserting a third support point is precisely
+    # what cost `phaselag_composite_v2` +0.18 m of HWM bias, and CORA separately
+    # established that linear interpolation is NOT a meaningful error source on
+    # the open coast — so a third node has no job to do. Atlantic City (39.355)
+    # already brackets the v2 south edge (39.70), so two nodes remain sufficient.
+    #
+    # Hence: the buffer is a per-domain fact, chosen with MARGIN rather than tuned
+    # to a knife edge (v2: AC at 39.6 km is in, Cape May at 99.1 km is out, with a
+    # 60 km gap either side), and `n_waterlevel_support` is asserted after
+    # hydromt has actually selected, so a future push south fails loudly instead
+    # of silently re-shaping the boundary. When the domain does reach Cape May,
+    # raise BOTH numbers deliberately and re-baseline.
+    waterlevel_buffer: int = 100_000
+    n_waterlevel_support: int | None = None
 
     def bbox_ll(self, buffer_deg: float = 0.0) -> tuple[float, float, float, float]:
         """Region bounding box in WGS-84 as ``(west, south, east, north)``.
@@ -217,8 +245,15 @@ _BB_SHIP_BOTTOM = ObsGauge(
 )
 _SSS_BARNEGAT_INLET = ObsGauge(
     "usgs_stormtide_barnegat_inlet", -74.104167, 39.763611, "surge",
-    "gtsm/sandy_storm_tide_nj.nc", "stormtide_m", None,
-    "USGS SSS-NJ-OCE-001WV/BP, deployed in Barnegat Inlet itself.",
+    "gtsm/sandy_storm_tide_nj.nc", "stormtide_m", 2260,
+    "USGS SSS-NJ-OCE-001WV, deployed in Barnegat Inlet itself. Storm-tide peak "
+    "1.65 m NAVD88 at 2012-10-30 00:00 UTC. Independently corroborates the "
+    "Barnegat Light gauge (01409125: 1.59 m at 00:24) from ~1 km away — two "
+    "instruments, two agencies, agreeing to 0.06 m and 24 min, which is a far "
+    "stronger target than either alone. "
+    "⚠️ obs_station was None until 2026-07-27: the point was declared here and "
+    "written into sfincs.obs, but sandy_storm_tide_nj.nc only carried the two "
+    "Monmouth Beach units, so it silently scored against nothing.",
 )
 
 # ── Mask overrides (UTM 18N) ─────────────────────────────────────────────────
@@ -337,6 +372,10 @@ V1_MONMOUTH = Domain(
     open_coast_max_y=4_476_000,
     hwm_rules=_V1_BASIN_RULES,
     plot_window=(578_500, 592_000, 4_462_000, 4_482_000),
+    # Battery 20.0 km, Atlantic City 92.5 km, Cape May 150.7 km => 2 support points.
+    # This reproduces the sealed premier's boundary exactly.
+    waterlevel_buffer=100_000,
+    n_waterlevel_support=2,
 )
 
 V2_BARNEGAT = Domain(
@@ -357,6 +396,11 @@ V2_BARNEGAT = Domain(
     open_coast_max_y=4_476_000,
     hwm_rules=_V2_SOUTH_RULES + _V1_BASIN_RULES,
     plot_window=(578_500, 592_000, 4_462_000, 4_482_000),
+    # Battery 20.0 km, Atlantic City 39.6 km, Cape May 99.1 km. 100 km would admit
+    # Cape May by 0.9 km and turn the premier's 2-node boundary into a 3-node one;
+    # 60 km keeps the intended pair with ~20 km / ~39 km of margin on either side.
+    waterlevel_buffer=60_000,
+    n_waterlevel_support=2,
 )
 
 DOMAINS: dict[str, Domain] = {d.name: d for d in (V1_MONMOUTH, V2_BARNEGAT)}

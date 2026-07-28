@@ -142,7 +142,15 @@ class BaseConfig:
 
     # ── Surge boundary (observed NOAA CO-OPS gauges) ─────────────────────────
     waterlevel_geodataset: str = "noaa_sandy_nj"
-    waterlevel_buffer: int = 100_000  # m; reach down to Atlantic City gauge
+    # m; reach down to the Atlantic City gauge WITHOUT reaching Cape May. This is a
+    # per-domain fact rather than a shared constant: `noaa_sandy_nj.nc` carries three
+    # gauges, and which of them hydromt selects depends on the region's distance to
+    # each. 100 km picks Battery+AC on v1_monmouth but Battery+AC+CAPE MAY on
+    # v2_barnegat (Cape May falls from 150.7 km to 99.1 km), silently converting the
+    # premier's 2-node boundary into a 3-node one. See domain.py for the full note.
+    waterlevel_buffer: int = field(
+        default_factory=lambda: _domain.active().waterlevel_buffer
+    )
 
     @property
     def data_libs(self) -> list[str]:
@@ -172,6 +180,26 @@ class WaveConfig:
     wave_geodataset: str = "era5_waves_nj"
     wave_era5_node: tuple[float, float] = (-74.0, 40.0)  # nearest valid offshore node
     wave_n_support: int = 7  # alongshore support points on the boundary
+
+    # ── Per-support-point wave forcing (2026-07-27) ──────────────────────────
+    # When set, the wave boundary is read from an UNSTRUCTURED POINT file — dims
+    # (time, node) with lon/lat/depth coords — and every support point gets its own
+    # NEAREST node instead of one node broadcast alongshore.
+    #
+    # This exists because the ERA5 path cannot express alongshore structure: a 31 km
+    # ERA5 cell cannot resolve a 25 km boundary, so all 7 support points receive
+    # byte-identical Hs. That is a limitation of the source, not a modelling choice,
+    # and it is one of the two defects the CORA arm addresses. The other is depth:
+    # measured at the v2 support points, ERA5 imposes 8.624 m in ~9.9 m of water
+    # (gamma 0.86-0.89, ABOVE the 0.78 depth-limited breaking cap, i.e. physically
+    # inadmissible at all 7 points) while CORA's shelf-resolving SWAN imposes
+    # 4.98-6.11 m there (gamma 0.50-0.63, admissible) with 1.14 m of alongshore spread.
+    #
+    # Path rather than a catalog key on purpose: hydromt's RasterDataset/GeoDataset
+    # drivers do not describe an unstructured ADCIRC/SWAN node set, and inventing a
+    # driver for it would put a debugging risk between us and a staged run. Provenance
+    # is documented in data/data_catalog.yml alongside the real entries.
+    wave_point_dataset: Path | None = None
 
     # ── SnapWave / SFINCS boundary DECOUPLING (2026-07-22) ───────────────────
     # X1 forced the wave solver onto the SFINCS mesh, which pinned the wave
@@ -236,6 +264,63 @@ class Experiment:
 # ── The experiment library the runner sweeps over ────────────────────────────
 # Reference points first, then the wave knobs turned on one (group) at a time.
 EXPERIMENTS: dict[str, Experiment] = {
+    # ── v2_barnegat campaign (2026-07-27) ────────────────────────────────────
+    # THE CONTROL. Identical configuration to the adopted v1 premier — Faber SIF,
+    # SnapWave + wind + Tim's tuned physics, default NOAA Battery->AC forcing — run
+    # on the extended domain. It is the same knobs as `snapwave_tuned` below; it
+    # carries its own name because on this domain it is the reference every other
+    # arm is measured against, and a run's name is what ends up in a metrics table.
+    #
+    # ⚠️ Nothing about "same configuration" makes it comparable to the v1 numbers.
+    # The HWM mark count alone goes 31 -> 95, so any v2-vs-v1 table must be a
+    # BRIDGE RESCORE restricted to v1's marks before it means anything.
+    "faber-waves-premier": Experiment(
+        "faber-waves-premier",
+        WaveConfig(
+            use_waves=True, wave_wind=True, wave_igwaves=False, tune_physics=True
+        ),
+        "CONTROL: the adopted premier configuration, run on v2_barnegat.",
+        waterlevel_geodataset=None,
+    ),
+    # THE PERTURBATION. One variable vs the control: where the SnapWave boundary
+    # sea state comes from. ERA5 -> CORA's shelf-resolving SWAN, applied per support
+    # point instead of one node broadcast alongshore.
+    #
+    # Measured at the v2 support points before running (so this is a prediction, not
+    # a rationalisation):
+    #   ERA5  8.624 m at all 7 points, gamma 0.86-0.89  => ABOVE the 0.78 depth-limited
+    #         breaking cap in ~9.9 m of water, i.e. physically inadmissible everywhere,
+    #         and with EXACTLY zero alongshore variation.
+    #   CORA  4.98-6.11 m, gamma 0.50-0.63 => admissible, with 1.14 m of alongshore
+    #         spread. Nearest CORA node is 0.09-0.35 km away at 7.4-13.4 m depth.
+    #
+    # This attacks the SAME defect as v1's `wave-deep30` by the opposite route:
+    # wave-deep30 kept ERA5's 8.624 m and moved the boundary out to where it is valid;
+    # this keeps the boundary and imposes the shelf-transformed height that belongs
+    # there. Expected direction: markedly less setup, so lower levels — the v1 premier
+    # ran +0.32 m WET, so this pushes the right way, but the drop here is far larger
+    # than wave-deep30's -0.034 m and OVERSHOOT IS A REAL POSSIBILITY.
+    #
+    # ⚠️ TWO HONEST CAVEATS, recorded before the result exists:
+    #  1. This changes the SOURCE and the ALONGSHORE STRUCTURE together, because ERA5
+    #     cannot express the latter at all. A null or a win cannot be attributed to one
+    #     of them alone; separating them needs a third arm (CORA at a single node).
+    #  2. CORA is not a gold standard. Against NDBC 44025 at the buoy's own location
+    #     and depth it runs +0.49 m HIGH (peak 10.84 vs 9.65 m, RMSE 0.78 m). That
+    #     cuts in this arm's favour rather than against it — CORA is biased high
+    #     offshore and STILL only asks for ~5-6 m at the 10 m contour — so the
+    #     reduction is shelf transformation, not a low source. Do not quote CORA's
+    #     nearshore value as truth; quote the direction.
+    "wave-cora": Experiment(
+        "wave-cora",
+        WaveConfig(
+            use_waves=True, wave_wind=True, wave_igwaves=False, tune_physics=True,
+            wave_point_dataset=DATA / "waves" / "cora_waves_nj.nc",
+        ),
+        "PERTURBATION: SnapWave boundary from CORA SWAN, per support point, instead "
+        "of one ERA5 deep-water node broadcast alongshore.",
+        waterlevel_geodataset=None,
+    ),
     "baseline_no_waves": Experiment(
         "baseline_no_waves",
         WaveConfig(use_waves=False),

@@ -541,3 +541,24 @@ wavemaker_nj_coast:
     category: forcing
     crs: 32618
     source: scripts/build_wavemaker_line.py from CUDEM -5 m NAVD88 contour
+
+# ── CORA SWAN wave boundary (2026-07-27) ──────────────────────────────────────
+# NOT a hydromt driver entry. `cora_waves_nj.nc` is an UNSTRUCTURED point set —
+# dims (time, node) with lon/lat/depth coords on NOAA CORA's NOMAD v1e mesh — which
+# none of hydromt's RasterDataset/GeoDataset drivers describes. It is read directly
+# by nj_sfincs.model._point_wave_bnd via WaveConfig.wave_point_dataset. Recorded here
+# so its provenance sits with every other dataset's rather than only in code.
+#
+#   cora_waves_nj:
+#     uri:      waves/cora_waves_nj.nc
+#     builder:  scripts/build_cora_waves.py
+#     source:   s3://noaa-nos-cora-pds/cora_gec/native_grid/waves/zarr
+#               swan_HS / swan_TPS / swan_DIR, 2012 map files (kerchunk refs, anon S3)
+#     mesh:     NOMAD v1e   vars: hs [m], tp [s], wd [deg nautical]
+#     extent:   7,824 nodes in the v2_barnegat box (depth > 2 m, all-finite only),
+#               121 hourly steps 2012-10-27 .. 2012-11-01
+#     use:      WAVE BOUNDARY ONLY. CORA was evaluated and REJECTED as a water-level
+#               forcing source (tide late +6..+24 min, levels 0.14-0.31 m low).
+#     caveat:   vs NDBC 44025 at the buoy's own location/depth CORA is +0.49 m HIGH
+#               (peak 10.84 vs 9.65 m, RMSE 0.78 m). It is used for its SHELF
+#               TRANSFORMATION and alongshore structure, not as a height standard.

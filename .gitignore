@@ -57,3 +57,5 @@ archive/
 # nbconvert --execute artifacts
 notebooks/*.executed.ipynb
 sfincs-env.tar.gz
+reports/figures/faber-waves-premier_hmax.tif
+reports/figures/wave-cora_hmax.tif

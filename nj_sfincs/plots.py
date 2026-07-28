@@ -334,9 +334,20 @@ def plot_floodmap(mod, da_hmax):
     return fig, ax
 
 
-def _sample_hwm(da_hmax, da_dep, data_dir=DATA):
-    """Shared HWM sampling for the scatter + residual map (mirrors cell 74)."""
-    DEPTH_MIN, GROUND_CAP = 0.15, 0.5
+def _sample_hwm(da_hmax, da_dep, data_dir=DATA, estimator=None):
+    """Shared HWM sampling for the scatter + residual map.
+
+    ⚠️ This USED to be an independent copy of ``validate.hwm_metrics``' sampler, which
+    meant the figures and the scored CSV could silently disagree about what a mark's
+    modelled level even is. It now defers to ``validate`` for both the estimator and
+    the wet threshold, so changing the estimator moves the plots and the numbers
+    together. See ``validate.hwm_metrics``' ``estimator`` docstring for why ``max``
+    was abandoned on 2026-07-28.
+    """
+    from .validate import (DEPTH_MIN, HWM_ESTIMATOR_DEFAULT, HWM_RADIUS_M)
+
+    estimator = estimator or HWM_ESTIMATOR_DEFAULT
+    GROUND_CAP = 0.5
     hwm = gpd.read_file(str(data_dir / "validation" / "sandy_hwms.geojson")).to_crs(
         da_dep.rio.crs
     )
@@ -345,19 +356,27 @@ def _sample_hwm(da_hmax, da_dep, data_dir=DATA):
         depth, wse, dep_arr = depth[0], wse[0], dep_arr[0]
     T = da_dep.rio.transform()
     ny, nx = wse.shape
-    rad = int(round(50 / abs(T.a)))
+    rad = int(round(HWM_RADIUS_M / abs(T.a)))
     obs = hwm["elev_m"].values
     qual = hwm["quality"].values.astype(float)
     mod_wse = np.full(len(obs), np.nan)
     for k, (X, Y) in enumerate(zip(hwm.geometry.x.values, hwm.geometry.y.values)):
         col, row = int((X - T.c) / T.a), int((Y - T.f) / T.e)
         if 0 <= row < ny and 0 <= col < nx:
-            sl = (slice(max(0, row - rad), row + rad + 1),
-                  slice(max(0, col - rad), col + rad + 1))
+            r0, c0 = max(0, row - rad), max(0, col - rad)
+            sl = (slice(r0, row + rad + 1), slice(c0, col + rad + 1))
             ws, hh, dd = wse[sl], depth[sl], dep_arr[sl]
             flooded = (hh >= DEPTH_MIN) & (dd <= obs[k] + GROUND_CAP)
             if flooded.any():
-                mod_wse[k] = np.nanmax(np.where(flooded, ws, np.nan))
+                vals = ws[flooded]
+                if estimator == "median":
+                    mod_wse[k] = np.nanmedian(vals)
+                elif estimator == "max":
+                    mod_wse[k] = np.nanmax(vals)
+                else:
+                    rr, cc = np.nonzero(flooded)
+                    j = int(np.argmin((rr - (row - r0)) ** 2 + (cc - (col - c0)) ** 2))
+                    mod_wse[k] = ws[rr[j], cc[j]]
     wet = np.isfinite(mod_wse)
     return hwm, obs, mod_wse, mod_wse - obs, wet, qual
 
