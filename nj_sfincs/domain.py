@@ -66,6 +66,38 @@ class MaskOverride:
 
 
 @dataclass(frozen=True)
+class NoWaterLevelBox:
+    """A rectangle in which a water-level BC (``mask==2``) is a BUILD-TIME ERROR.
+
+    ``MaskOverride`` fixes a bad boundary cell after the fact; this asserts one can
+    never appear. The two are complements and both are wanted: the override is the
+    repair, this is the alarm that says the repair is still needed.
+
+    Why this class exists (2026-07-30). ``mask_zmin = -10`` makes every cell deeper
+    than -10 m INACTIVE, so the active domain's seaward limit is the -10 m isobath
+    and ``create_boundary`` lays the imposed open-ocean level along it. That is the
+    intended construction on the open coast. But the -10 m contour also reaches
+    THROUGH Barnegat Inlet: 145 cells in the throat came back inactive, and
+    ``create_boundary`` rimmed them with 193 ``mask==2`` cells running 2.6 km inside
+    the mouth — 75 m from the Barnegat Light gauge.
+
+    That is not a small error. Measured in ``wave-cora+bed-ehydro``, those cells
+    carried a pre-storm tidal range of 1.465 m, against 1.461 m at the open-coast
+    boundary off Sandy Hook and 0.707 m OBSERVED at Barnegat Light. The full ocean
+    tide was clamped inside the inlet, which is exactly the defect the Manahawkin
+    cut was written for, and it plausibly explains both recorded bay defects: a
+    -43 min "early" arrival is zero lag (it IS the ocean phase), and the 1.9x
+    over-amplification is the clamp bleeding out.
+
+    Box is in the domain's projected CRS, ``(xmin, ymin, xmax, ymax)``.
+    """
+
+    name: str
+    box: tuple[float, float, float, float]
+    why: str = ""
+
+
+@dataclass(frozen=True)
 class BasinRule:
     """One HWM reporting basin, as coordinate thresholds in the domain CRS.
 
@@ -125,6 +157,8 @@ class Domain:
     # Force these lon/lat boxes active at any depth, so dredged channels don't
     # punch inactive holes through a bay interior.
     always_active_boxes_ll: tuple[tuple[float, float, float, float], ...] = ()
+    # Rectangles (projected CRS) in which a water-level BC is a build-time error.
+    no_waterlevel_boxes: tuple[NoWaterLevelBox, ...] = ()
     # Northing above which the coast is no longer open ocean (a spit tip, a
     # harbour mouth). Wave-boundary support points are only taken below it.
     open_coast_max_y: float | None = None
@@ -317,6 +351,55 @@ _MANAHAWKIN_CUT = MaskOverride(
     "which must not have an open-ocean level imposed on it.",
 )
 
+# ── Barnegat Inlet gorge (2026-07-30) ────────────────────────────────────────
+# The same defect as the Manahawkin cut, arriving by the opposite route. There the
+# DOMAIN EDGE crossed interior water; here the -10 m ISOBATH does. Barnegat Inlet
+# is scoured to -14.8 m, so `create_active(zmin=-10)` punched 145 inactive cells
+# through the throat, `create_boundary` rimmed them, and the open-ocean level was
+# imposed 2.6 km inside the mouth. See NoWaterLevelBox for the measurements.
+#
+# The fix has to be an ALWAYS-ACTIVE box rather than a `MaskOverride 2 -> 1`,
+# because demoting the rim would leave the holes themselves in place — inactive
+# islands blocking the throat, which is a different wrong answer. Activating the
+# gorge removes the holes and the rim together.
+#
+# ⚠️ THE EAST EDGE IS THE WHOLE DESIGN OF THIS BOX. Extend it seaward far enough to
+# touch the ocean-connected deep water and the fix does nothing but relocate the
+# problem: the box's own seaward rim becomes the new `mask==2` line. So the edge is
+# tuned to the last longitude at which the box contains ZERO ocean-connected
+# inactive cells, checked after reprojecting the lon/lat box exactly as
+# `apply_mask_and_boundary` does (the UTM convergence here is ~0.6 deg, worth ~35 m
+# of edge displacement — enough to matter at 12.5 m cells):
+#
+#     lon east   holes captured   ocean-connected inactive inside
+#     -74.0870        130/153          0
+#     -74.0860        133/153          0     <- adopted
+#     -74.0853        135/153          1
+#     -74.0845        140/153          4
+#
+# The 20 holes left outside are at the mouth itself; `_fill_inactive_holes` in
+# model.py takes those, which lands the boundary line on the ebb delta where an
+# imposed ocean level is defensible.
+_BARNEGAT_INLET_GORGE_LL = (-74.1163, 39.7538, -74.0860, 39.7850)
+
+# ⚠️ The east edge of the FORBIDDEN zone is a different number from the east edge of
+# the always-active box, and for a different reason. The -10 m isobath has to become
+# the water-level boundary SOMEWHERE — the honest place is the alongshore open-coast
+# line, which off Barnegat runs ragged between x 578,222 and 578,465. So the zone must
+# stop landward of that line or it will condemn the legitimate boundary: at 578,400 it
+# flagged 11 perfectly ordinary open-coast cells at x 578,283-578,394.
+#
+# 578,150 clears the westernmost of those by 133 m and still covers 114 of the 145
+# BC cells the un-repaired mask put in this box — i.e. everything actually inside the
+# throat, including both gauges. Chosen with margin rather than tuned to the edge; the
+# Cape May trap is what a knife-edge threshold costs.
+_NO_WL_BARNEGAT_INLET = NoWaterLevelBox(
+    "barnegat_inlet", (575_600, 4_400_700, 578_150, 4_404_400),
+    "The inlet throat is the exchange this domain was extended to MEASURE. An "
+    "imposed open-ocean level here short-circuits it and hands the bay the ocean's "
+    "amplitude and phase directly, 75 m from the Barnegat Light gauge.",
+)
+
 # ── HWM basins ───────────────────────────────────────────────────────────────
 # v1's five, re-expressed as ordered rules. Same numbers, same outcome — there is
 # a test that asserts this reproduces the original classifier exactly.
@@ -392,7 +475,11 @@ V2_BARNEGAT = Domain(
         _BB_MANTOLOKING, _BB_BARNEGAT_LIGHT, _SSS_BARNEGAT_INLET,
     ),
     mask_overrides=(_MANAHAWKIN_CUT,) + _V1_MASK_OVERRIDES,
-    always_active_boxes_ll=((-74.28, 40.40, -73.95, 40.52),),
+    always_active_boxes_ll=(
+        (-74.28, 40.40, -73.95, 40.52),   # Raritan / Sandy Hook dredged channels (v1)
+        _BARNEGAT_INLET_GORGE_LL,         # the inlet scour hole (2026-07-30)
+    ),
+    no_waterlevel_boxes=(_NO_WL_BARNEGAT_INLET,),
     open_coast_max_y=4_476_000,
     hwm_rules=_V2_SOUTH_RULES + _V1_BASIN_RULES,
     plot_window=(578_500, 592_000, 4_462_000, 4_482_000),

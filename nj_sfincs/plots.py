@@ -184,26 +184,78 @@ def plot_rain(sf):
     return fig, (ax1, ax2)
 
 
+#: The USGS gauge behind each modelled inflow, keyed by the (lon, lat) the source cell
+#: was placed on — the same table ``scripts/download_usgs_sandy_discharge.py`` writes
+#: from. Matched by NEAREST source coordinate rather than by index, because the order of
+#: the stations dimension is a property of the forcing file, not something to rely on.
+#: One registry covers both domains: v1 places 2 of these, v2 places all 6.
+DISCHARGE_SOURCES = {
+    (-74.035, 40.195): "Shark R. nr Neptune City (01407705)",
+    (-74.045, 40.370): "Swimming R. nr Red Bank — Navesink (01407500)",
+    (-74.170, 39.945): "Toms R. nr Toms River (01408500)",
+    (-74.115, 40.056): "N Br Metedeconk R. nr Lakewood (01408120)",
+    (-74.135, 39.878): "Cedar Ck nr Lanoka Harbor (01408900)",
+    (-74.095, 40.114): "Manasquan R. nr Allenwood (01408029)",
+}
+
+#: ~0.02 deg (~2 km): close enough to identify the source, tight enough that an
+#: UNREGISTERED inflow falls through to its bare index instead of being mislabelled
+#: with whichever river happens to be nearest.
+_DISCHARGE_MATCH_DEG = 0.02
+
+
+def _discharge_labels(dis) -> dict:
+    """{station index: river name}, matched on each source point's own coordinates.
+
+    ``discharge_points.data`` is a hydromt GeoDataset: the positions live in a shapely
+    ``geometry`` coord (UTM 18N POINTs), NOT in x/y/lon/lat coords. Both layouts are
+    handled — the plain-coord branch is what the raw forcing .nc carries.
+    """
+    from pyproj import Transformer
+
+    xs = ys = None
+    if "geometry" in dis.coords:
+        geom = np.asarray(dis["geometry"].values).ravel()
+        xs = np.array([g.x for g in geom], float)
+        ys = np.array([g.y for g in geom], float)
+    else:
+        xc = next((c for c in ("x", "lon", "longitude") if c in dis.coords), None)
+        yc = next((c for c in ("y", "lat", "latitude") if c in dis.coords), None)
+        if xc is None or yc is None:
+            return {}
+        xs = np.asarray(dis[xc].values, float).ravel()
+        ys = np.asarray(dis[yc].values, float).ravel()
+    if np.nanmax(np.abs(xs)) > 360:  # positions are UTM; the registry is lon/lat
+        xs, ys = Transformer.from_crs(32618, 4326, always_xy=True).transform(xs, ys)
+    out = {}
+    for k in range(xs.size):
+        name, d2 = min(
+            (((xs[k] - lo) ** 2 + (ys[k] - la) ** 2, nm)
+             for (lo, la), nm in DISCHARGE_SOURCES.items()),
+            key=lambda t: t[0],
+        )[::-1]
+        if d2 <= _DISCHARGE_MATCH_DEG ** 2:
+            out[k] = name
+    return out
+
+
 def plot_discharge(sf):
-    """Cell 48 — USGS discharge hydrographs at the two domain inflows."""
+    """USGS discharge hydrographs at the domain inflows, labelled by river."""
     import matplotlib.pyplot as plt
 
     dis = sf.discharge_points.data
     da = dis["dis"]
     pt = next(d for d in da.dims if d != "time")
-    yc = next((c for c in ("y", "lat", "latitude") if c in dis.coords), None)
-    names = {}
-    if yc is not None and da.sizes[pt] == 2:
-        order = np.argsort(dis[yc].values)
-        names[int(order[0])] = "Shark River (1407705)"
-        names[int(order[-1])] = "Navesink / Swimming R. (1407500)"
-    fig, ax = plt.subplots(figsize=(10, 4))
-    for k in range(da.sizes[pt]):
+    names = _discharge_labels(dis)
+    peak = {k: float(np.nanmax(da.isel({pt: k}).values)) for k in range(da.sizes[pt])}
+    fig, ax = plt.subplots(figsize=(10, 4.4))
+    for k in sorted(peak, key=peak.get, reverse=True):  # biggest inflow reads first
         ax.plot(da["time"], da.isel({pt: k}), lw=2, drawstyle="steps-post",
-                label=names.get(k, f"point {k}"))
+                label=f"{names.get(k, f'point {k}')} — peak {peak[k]:.1f} m³/s")
     ax.set_ylabel("discharge [m$^3$/s]")
     ax.set_xlabel("time [UTC]")
-    ax.set_title("USGS river discharge at domain inflows")
+    ax.set_title(f"USGS river discharge at the {da.sizes[pt]} domain inflows "
+                 f"(total peak {sum(peak.values()):.0f} m³/s)")
     ax.legend()
     ax.grid(alpha=0.3)
     fig.tight_layout()
@@ -815,21 +867,91 @@ def plot_gauge_verification(runs, root=None, data_dir=DATA, hours=None):
 
     from .validate import (
         _prestorm_window, _tidal_signal, _uniform_series, _wet_channel_cells,
-        _xcorr_lag_minutes,
+        _xcorr_lag_minutes, zs_at_faces,
     )
 
-    def _phase_tag(mt, series, ot, ow, t_die):
-        """Pre-storm phase lag (min, + = model later) as a label suffix, or ''."""
+    def _phase_tag(mt, series, ot, ow, win, dt_s):
+        """Pre-storm phase lag (min, + = model later) as a label suffix, or ''.
+
+        ``win`` MUST be ``validate._prestorm_window`` on this run's map times, and
+        ``dt_s`` the cadence ``validate.gauge_phase_lag`` uses for this gauge class
+        (600 s for his-sampled surge gauges, 3600 s for map-sampled interior ones).
+        Both are arguments rather than derived here so this tag and the scored
+        ``phase_lag_*_min`` column cannot drift apart.
+
+        FIXED 2026-07-28 — this used to anchor its own 24 h window on ``ot[0]``, the
+        OBSERVATION start, which broke it two ways at once and made the figure quote a
+        number the CSV never contained (Sandy Hook +35 min in the legend vs 17.8 scored):
+
+        1. No spin-up skip. ``validate._prestorm_window`` opens SPINUP_SKIP_H = 12 h
+           after tstart precisely because a window that starts in the spin-up drawdown
+           and closes on a rising tide is a badly-conditioned cross-correlation — it
+           reads ~13 min high (see [[project_tidal_phase_lag]], the 2026-07-21 fix).
+           Re-introducing it here re-introduced the same inflation.
+        2. Worse, and silent: the observations start a full day before tstart, so the
+           model had no samples over most of that window. ``_uniform_series`` clips its
+           uniform grid to each series' OWN coverage, and ``_xcorr_lag_minutes`` then
+           aligns the two arrays by INDEX 0 — so model index 0 was being matched
+           against an obs sample from a different wall-clock time, adding a spurious
+           offset on top of the real lag. Deriving the window from the MODEL's times
+           makes both series span it, which is what keeps that index alignment honest.
+
+        The obs record end is no longer consulted: the window closes 36 h after tstart,
+        before any gauge in GAUGES fails, so clipping to ``t_die`` never bound anyway.
+
+        Returns "" — deliberately, rather than a number — when the observation does not
+        span the pre-storm window, or when either series is not tidal over it. The USGS
+        Sea Bright storm-tide sensor is the live case: it was deployed FOR the storm and
+        its record covers 2012-10-29 22:00 to 10-30 01:12 only. The old code silently
+        shrank its window to that 3.2 h of storm crest and reported "Δφ +1 min", which
+        reads as a pre-storm tidal-phase check but is nothing of the kind — there is no
+        tide in that window, only the surge peak. ``_peak_tag`` reports its crest timing
+        instead, under a name that says what it is.
+        """
         try:
-            t0 = np.datetime64(pd.Timestamp(ot[0]))
-            tw = min(np.datetime64(pd.Timestamp(t_die)),
-                     t0 + np.timedelta64(24 * 3600, "s"))
-            ms = _uniform_series(np.asarray(mt, "datetime64[ns]"), series, t0, tw, 600.0)
-            oss = _uniform_series(np.asarray(ot, "datetime64[ns]"), ow, t0, tw, 600.0)
+            t0, t1 = win
+            ms = _uniform_series(np.asarray(mt, "datetime64[ns]"), series, t0, t1, dt_s)
+            oss = _uniform_series(np.asarray(ot, "datetime64[ns]"), ow, t0, t1, dt_s)
             if ms is None or oss is None:
                 return ""
-            lag = _xcorr_lag_minutes(ms, oss, 600.0)
+            # A cross-correlation between two series that do not oscillate is not a
+            # phase measurement. Both bay gauges pass this (obs frac_rising ~0.5,
+            # r ~ 0.7 at zero lag), so it costs nothing real — it is the guard that
+            # stops a drained or dammed basin from printing a confident lag.
+            if not (_tidal_signal(ms)["is_tidal"] and _tidal_signal(oss)["is_tidal"]):
+                return ""
+            lag = _xcorr_lag_minutes(ms, oss, dt_s)
             return f", Δφ {lag:+.0f} min" if np.isfinite(lag) else ""
+        except Exception:
+            return ""
+
+    def _peak_tag(mt, series, ot, ow):
+        """Crest-timing offset (min, + = model crests later) for storm-only records.
+
+        For a sensor deployed for the storm there is no pre-storm tide to phase-match,
+        but the arrival time of the single crest is still a real check on the forcing.
+        Kept separate from Δφ, and named differently in the legend, so the two are never
+        read as the same measurement.
+        """
+        try:
+            om, mm = np.asarray(ow, float), np.asarray(series, float)
+            if not (np.isfinite(om).any() and np.isfinite(mm).any()):
+                return ""
+            io, fin = int(np.nanargmax(om)), np.where(np.isfinite(om))[0]
+            # A gauge that died before its crest reports a FLOOR, not a peak — Sandy
+            # Hook is the standing example. Differencing against it would manufacture a
+            # timing error out of the instrument's failure, so say nothing instead.
+            if io == fin[-1]:
+                return ""
+            to = pd.Timestamp(np.asarray(ot)[io])
+            # only over the observed record — the model runs on past the sensor
+            mt_ = pd.DatetimeIndex(mt)
+            keep = (mt_ >= pd.Timestamp(np.asarray(ot)[0])) & \
+                   (mt_ <= pd.Timestamp(np.asarray(ot)[np.isfinite(om)][-1]))
+            if not keep.any() or not np.isfinite(mm[keep]).any():
+                return ""
+            tm = mt_[keep][np.nanargmax(mm[keep])]
+            return f", crest Δt {(tm - to).total_seconds() / 60.0:+.0f} min"
         except Exception:
             return ""
 
@@ -838,11 +960,26 @@ def plot_gauge_verification(runs, root=None, data_dir=DATA, hours=None):
         runs = {r: r for r in runs}
 
     obs_cache: dict = {}
+    win_cache: dict = {}
 
     def _obs(fname):
         if fname not in obs_cache:
             obs_cache[fname] = xr.open_dataset(str(Path(data_dir) / "gtsm" / fname))
         return obs_cache[fname]
+
+    def _win(d: Path):
+        """This run's pre-storm window — one per run dir, shared by every panel.
+
+        Taken from ``sfincs_map.nc`` because that is the basis
+        ``validate.gauge_phase_lag`` and ``validate.tidal_range_metric`` both use; a
+        his-derived window would be the same times here but would silently stop
+        matching if the two cadences ever diverged.
+        """
+        if d not in win_cache:
+            mp_ = d / "sfincs_map.nc"
+            win_cache[d] = (_prestorm_window(xr.open_dataset(mp_)["time"].values)
+                            if mp_.exists() else None)
+        return win_cache[d]
 
     fig, axes = plt.subplots(len(GAUGES), 1, figsize=(11, 3.9 * len(GAUGES)), sharex=True)
     axes = np.atleast_1d(axes)
@@ -880,7 +1017,11 @@ def plot_gauge_verification(runs, root=None, data_dir=DATA, hours=None):
                 cells = _wet_channel_cells(d, g["lon"], g["lat"])
                 if cells is None:
                     continue
-                zsc = mp["zs"].isel(nmesh2d_face=cells[0]).values
+                # ⚡ via zs_at_faces, NOT mp["zs"].isel(nmesh2d_face=...): the map is
+                # chunked (1, nface), so a scattered face index costs ~52 s per gauge
+                # and this loop runs it once per gauge PER RUN. One contiguous memoised
+                # read is 1.2 s for the whole file. See validate.zs_at_faces.
+                zsc = zs_at_faces(d, cells[0])
                 full = np.isfinite(zsc).all(axis=0)
                 if not full.any():
                     continue
@@ -897,6 +1038,8 @@ def plot_gauge_verification(runs, root=None, data_dir=DATA, hours=None):
                 pre = (mp["time"].values >= w0) & (mp["time"].values <= w1)
                 sig = _tidal_signal(series[pre]) if pre.sum() > 3 else dict(frac_rising=np.nan)
                 tag = f"rises {sig['frac_rising']:.2f} of the time"
+                # hourly map series → the cadence gauge_phase_lag uses for Shark
+                phase_dt = 3600.0
             else:
                 # OPEN-COAST surge gauges: sample the model AT the sensor (its his obs
                 # point). Here the wet-channel median is the WRONG tool — it skips the
@@ -915,7 +1058,11 @@ def plot_gauge_verification(runs, root=None, data_dir=DATA, hours=None):
                 mt = pd.to_datetime(his["time"].values)
                 series = np.where(zs - zb > 0.05, zs, np.nan)  # draw only where wet
                 tag = f"peak {np.nanmax(zs):.2f} m"
-            tag += _phase_tag(mt, series, ot, ow, t_die)
+                phase_dt = 600.0  # his cadence, as gauge_phase_lag uses
+            win = _win(d)
+            ptag = _phase_tag(mt, series, ot, ow, win, phase_dt) if win is not None else ""
+            # storm-only sensors have no pre-storm tide; report the crest instead
+            tag += ptag or (_peak_tag(mt, series, ot, ow) if not is_tide else "")
             ax.plot(mt, series, lw=1.5, alpha=0.9, label=f"{label}   ({tag})")
 
         if g.get("crest") is not None:
@@ -1022,7 +1169,9 @@ def plot_motf_panels(runs, root=None, data_dir=DATA, ncol=2):
     ext = [mtf.c, mtf.c + mw * mtf.a, mtf.f + mh * mtf.e, mtf.f]
 
     for ax, (label, name) in zip(axes.ravel(), runs.items()):
-        _, hmax, dep = load_floodmap(root / name)
+        # need_model=False skips a 21 s SfincsModel open per run; this function
+        # only ever uses the two rasters.
+        _, hmax, dep = load_floodmap(root / name, need_model=False)
         mod_t = dep.rio.transform()
         Xc = mtf.c + (np.arange(mw) + 0.5) * mtf.a
         Yc = mtf.f + (np.arange(mh) + 0.5) * mtf.e
@@ -1106,7 +1255,9 @@ def plot_hwm_residual_panels(runs, root=None, data_dir=DATA, ncol=2):
 
     sc = None
     for ax, (label, name) in zip(axes.ravel(), runs.items()):
-        _, hmax, dep = load_floodmap(root / name)
+        # need_model=False skips a 21 s SfincsModel open per run; this function
+        # only ever uses the two rasters.
+        _, hmax, dep = load_floodmap(root / name, need_model=False)
         hwm, obs, mod_wse, resid, wet, qual = _sample_hwm(hmax, dep, data_dir)
         ext = _extent(dep)
         _2d = lambda a: a[0] if a.ndim == 3 else a

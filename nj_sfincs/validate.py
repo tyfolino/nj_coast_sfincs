@@ -229,6 +229,54 @@ def read_output(mod, lazy: bool = True) -> None:
         mod.output.set(mod.output.read_his_file(fn_his=str(fn_his)), split_dataset=True)
 
 
+#: Full ``zs(time, face)`` arrays, keyed by (map realpath, mtime). ~667 MB each on
+#: v2_barnegat; bounded so a 5-arm notebook pins ~3 GB rather than growing without end.
+_ZS_MEMO: "dict[tuple, object]" = {}
+_ZS_MEMO_MAX = 6
+
+
+def zs_at_faces(model_dir: Path, idx, var: str = "zs"):
+    """``var[time, idx]`` from sfincs_map.nc via ONE contiguous read.
+
+    ⚡ WHY THIS EXISTS (2026-07-29). ``sfincs_map.nc`` stores zs with chunking
+    ``(1, nface)`` — one chunk per timestep spanning every face. Indexing it the
+    obvious way::
+
+        mp["zs"].isel(nmesh2d_face=cells)      # cells = ~50 scattered face ids
+
+    defeats that layout completely: the scattered index is applied per chunk, and a
+    single gauge costs **~52 s**. Reading the whole variable contiguously and indexing
+    in numpy costs **1.2 s** — 43x faster — because it is one sequential 667 MB read
+    instead of 73 strided ones.
+
+    That one line was the notebook's dominant cost. ``plot_gauge_verification`` made
+    the call once per gauge per run (6 x 5 = 30 of them), which is where the ~7 minutes
+    per gauge cell came from.
+
+    The full array is memoised per (map file, mtime), so every gauge in every cell after
+    the first is free. ⚠️ The cached array is SHARED, not copied — treat it as READ-ONLY,
+    exactly like ``load_floodmap``'s rasters. Call ``load_floodmap_cache_clear()`` to
+    release it.
+    """
+    model_dir = Path(model_dir).resolve()
+    p = model_dir / "sfincs_map.nc"
+    key = (p, p.stat().st_mtime, var)
+    arr = _ZS_MEMO.get(key)
+    if arr is None:
+        with xr.open_dataset(p) as ds:
+            arr = np.asarray(ds[var].values)  # one contiguous read
+        if len(_ZS_MEMO) >= _ZS_MEMO_MAX:
+            _ZS_MEMO.pop(next(iter(_ZS_MEMO)))
+        _ZS_MEMO[key] = arr
+    return arr[:, np.asarray(idx)]
+
+
+def map_times(model_dir: Path):
+    """The map's time axis, without paying for the data variables."""
+    with xr.open_dataset(Path(model_dir) / "sfincs_map.nc") as ds:
+        return ds["time"].values
+
+
 def _inp_value(inp: Path, key: str) -> str:
     for line in inp.read_text().splitlines():
         if "=" in line and line.split("=")[0].strip() == key:
@@ -238,16 +286,36 @@ def _inp_value(inp: Path, key: str) -> str:
 
 #: In-process memo for ``load_floodmap``, keyed by (run dir, floodmap tif mtime).
 #: Bounded, because each entry pins ~2 GB of de-rotated raster on a 1.14 M-face domain.
+#:
+#: ⚠️ THIS MUST BE >= THE NUMBER OF ARMS A NOTEBOOK COMPARES (2026-07-29). It was 4,
+#: which was fine for the 2-arm campaign and silently catastrophic at 5: the FIFO
+#: evicted the first arm while the fifth loaded, so EVERY panel cell after the first
+#: re-derived all five from scratch. Measured cost of one derivation on v2_barnegat is
+#: ~70 s, so each of the four panel cells paid ~350 s — the "7 minutes per cell" the
+#: notebook was showing. A memo that is one entry too small is worse than no memo,
+#: because it looks like it is working.
 _FLOODMAP_MEMO: "dict[tuple, tuple]" = {}
-_FLOODMAP_MEMO_MAX = 4
+_FLOODMAP_MEMO_MAX = 8
+
+#: De-rotated subgrid DEM, keyed by (dep tif realpath, mtime, target grid signature).
+#: Separate from the floodmap memo because arms SHARE this file: on the frozen mesh a
+#: roughness-only or forcing-only arm has a byte-identical dep_subgrid_lev3.tif (4 of
+#: the 5 current arms hash the same, and they are hardlinked by the dedupe script).
+#: Opening it is 21 s and reproject_match is another 16 s, so sharing it across arms
+#: removes ~38 s per arm from the first pass.
+_DEP_MEMO: "dict[tuple, object]" = {}
+_DEP_MEMO_MAX = 3
 
 
 def load_floodmap_cache_clear():
     """Drop the in-process ``load_floodmap`` memo (frees the pinned rasters)."""
     _FLOODMAP_MEMO.clear()
+    _DEP_MEMO.clear()
+    _ZS_MEMO.clear()
 
 
-def load_floodmap(model_dir: Path, force: bool = False, memo: bool = True):
+def load_floodmap(model_dir: Path, force: bool = False, memo: bool = True,
+                  need_model: bool = True):
     """Open the run read-only and downscale zsmax onto the L3 subgrid DEM.
 
     Returns ``(mod, da_hmax, da_dep)`` — the model handle plus the north-up
@@ -275,6 +343,12 @@ def load_floodmap(model_dir: Path, force: bool = False, memo: bool = True):
         entry. Callers must treat them as READ-ONLY; every caller in this repo does.
         Pass ``memo=False`` for an independent copy, or call
         ``load_floodmap_cache_clear()`` to release the memory.
+
+    ``need_model`` — skip the 21 s SfincsModel open
+        The returned ``mod`` is only required to RE-DOWNSCALE a stale cache. Callers
+        that want the rasters alone (all the panel plotters) should pass False and get
+        ``mod is None``. It is ignored — the model is opened anyway — when the cache is
+        stale or ``force`` is set, because the downscale genuinely needs it.
     """
     model_dir = Path(model_dir).resolve()
     key = None
@@ -284,14 +358,22 @@ def load_floodmap(model_dir: Path, force: bool = False, memo: bool = True):
         key = (model_dir, fm_p.stat().st_mtime if fm_p.is_file() else None)
         if key in _FLOODMAP_MEMO:
             return _FLOODMAP_MEMO[key]
-    mod = SfincsModel(str(model_dir), data_libs=[str(DATA / "data_catalog.yml")], mode="r")
-    read_output(mod)
-
     depfile = str(model_dir / "subgrid" / "dep_subgrid_lev3.tif")
     floodmap_fn = str(model_dir / "floodmap_hmax_lev3.tif")
 
     fm, mp = Path(floodmap_fn), model_dir / "sfincs_map.nc"
     fresh = fm.is_file() and (not mp.is_file() or fm.stat().st_mtime >= mp.stat().st_mtime)
+
+    # Opening the SfincsModel costs ~21 s and is only NEEDED to re-downscale a stale
+    # cache (it supplies zsmax). Callers that just want the rasters — every panel
+    # plotter here does `_, hmax, dep = load_floodmap(...)` — can skip it via
+    # need_model=False. Kept as the default so no existing caller changes behaviour.
+    mod = None
+    if need_model or force or not fresh:
+        mod = SfincsModel(str(model_dir), data_libs=[str(DATA / "data_catalog.yml")],
+                          mode="r")
+        read_output(mod)
+
     if force or not fresh:
         da_zsmax = mod.output.data["zsmax"].max(dim="timemax")
         # Downscale to a temp file and os.replace() into position, so the cache is either
@@ -309,9 +391,27 @@ def load_floodmap(model_dir: Path, force: bool = False, memo: bool = True):
         )
         os.replace(tmp_fn, floodmap_fn)
     da_hmax = rioxarray.open_rasterio(floodmap_fn, masked=True).squeeze(drop=True)
-    da_dep = rioxarray.open_rasterio(depfile, masked=True).squeeze(drop=True)
     da_hmax = da_hmax.rio.reproject(da_hmax.rio.crs)   # de-rotate to north-up
-    da_dep = da_dep.rio.reproject_match(da_hmax)
+
+    # The dep pipeline (21 s open + 16 s reproject_match) is >half the cost of this
+    # function and is IDENTICAL for every arm that shares a subgrid. Key on the file's
+    # real path + mtime AND on the target grid, so a run whose de-rotated hmax grid
+    # differs can never silently receive a mismatched dep.
+    # ⚠️ Key on (device, inode), NOT on the path. `dedupe_experiment_inputs.py`
+    # HARDLINKS identical subgrid tifs between arms, and Path.resolve() only collapses
+    # SYMlinks — so a path key gives every arm a distinct entry for one physical file
+    # and the memo never hits. (Measured: it silently did nothing until this changed.)
+    st = Path(depfile).stat()
+    tgt = (da_hmax.rio.shape, tuple(da_hmax.rio.transform()), str(da_hmax.rio.crs))
+    dkey = (st.st_dev, st.st_ino, st.st_mtime, tgt)
+    da_dep = _DEP_MEMO.get(dkey)
+    if da_dep is None:
+        da_dep = rioxarray.open_rasterio(depfile, masked=True).squeeze(drop=True)
+        da_dep = da_dep.rio.reproject_match(da_hmax)
+        if len(_DEP_MEMO) >= _DEP_MEMO_MAX:
+            _DEP_MEMO.pop(next(iter(_DEP_MEMO)))
+        _DEP_MEMO[dkey] = da_dep
+
     da_hmax = da_hmax.where(da_dep.values > -0.5)      # drop deep ocean
     da_hmax.name = "hmax"
     out = (mod, da_hmax, da_dep)

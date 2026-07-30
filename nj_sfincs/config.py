@@ -86,6 +86,16 @@ class BaseConfig:
         )
     )
     reclass_table: Path = DATA / "roughness" / "NLCD_CONUS_mapping.csv"
+    # The land-cover raster the roughness + subgrid tables are reclassified from.
+    # A knob (rather than a literal in model.py) so a BED-ROUGHNESS arm can swap in a
+    # recoded raster — `bed-baymanning` re-codes NLCD 11 (Open Water) to a spare class
+    # inside the Barnegat lagoon only, so its Manning can differ from the ocean's.
+    # ⚠️ Roughness feeds `quadtree_subgrid.create`, so changing it requires a TEMPLATE
+    # REBUILD — it is not a `prepare_experiment` swap like `waterlevel_geodataset`.
+    # The domain seal is sha(z, mask) and does NOT include roughness, so a rebuilt
+    # template still audits as the same domain. That is the point: comparable by
+    # construction.
+    roughness_lulc: str = "nlcd_2012"
     container_sif: Path = ROOT / "sfincs-desktop.sif"
 
     # Reproducibility: if set to a pre-built static-mesh dir, build_static COPIES
@@ -321,6 +331,158 @@ EXPERIMENTS: dict[str, Experiment] = {
         "of one ERA5 deep-water node broadcast alongshore.",
         waterlevel_geodataset=None,
     ),
+    # ── bed-baymanning (2026-07-28): give the lagoon its own bed roughness ────
+    # CORA waves retained, so this is one variable vs `wave-cora`: Manning n inside
+    # Barnegat Bay, 0.020 -> 0.035. Class 11 stays 0.020 for the ocean, the
+    # Raritan/Sandy Hook lobe and the Shrewsbury — a GLOBAL bump would confound the
+    # north lobe, which is separately known to be ~15% UNDER-forced.
+    #
+    # THE MEASUREMENT THAT MOTIVATES IT (2026-07-28, premier, pre-storm window):
+    #   Barnegat Light, just inside the inlet: model tidal range 0.719 m vs 0.721
+    #     observed — the inlet exchange is already right to 2 mm.
+    #   Mantoloking, 35 km up the lagoon: model 0.401 m vs 0.167 m observed (2.4x),
+    #     and the tide arrives 58 min EARLY.
+    # Right at the inlet but too energetic and too fast up-lagoon = too little
+    # DISSIPATION in between. And it is not bathymetry: the lagoon's mean depth is
+    # 1.57 m against a published ~1.5 m, and its navigation channels sit within
+    # 0.4 m of USACE soundings — inside the datum uncertainty of that comparison.
+    # See [[reference_ehydro_district_sign]] for why a carve was rejected: it only
+    # ever removes bed, which pushes conveyance FURTHER the wrong way.
+    #
+    # PRE-REGISTERED PREDICTION (write it down before looking):
+    #   Mantoloking range  0.401 -> DOWN toward 0.167 m; phase -58 -> toward 0 min.
+    #   Barnegat Light 0.719 m and its -43 min: WATCH FOR DAMAGE. The inlet is the
+    #     one thing the model already gets right, and 0.035 reaches the inlet throat.
+    #   The along-bay gradient (obs +0.518 m, model -0.410 m) should NARROW.
+    #   Open coast, HWMs, CSI: ~unchanged. The recode is 182.8 km2 of back-bay water.
+    # A NULL here is informative: with bathymetry exonerated and friction unable to
+    # move it, the defect is storage/geometry — the closed Manahawkin wall.
+    #
+    # ⚠️ NOT a prepare_experiment swap. Roughness feeds `quadtree_subgrid.create`, so
+    # this arm must be staged from `_template_baymanning`
+    # (scripts/setup_baymanning_template.py), NOT `_template_sealed`:
+    #   NJ_TEMPLATE=experiments/_template_baymanning run_experiments.py \
+    #     --experiments 'wave-cora+bed-baymanning' --no-run
+    # The template builder asserts the domain fingerprint is UNCHANGED, because the
+    # seal is sha(z, mask) and excludes roughness. Staging from the wrong template
+    # silently produces a plain `wave-cora` rerun.
+    # ── bed-ehydro (2026-07-28): carve the southern navigation channels ──────
+    # CORA waves retained, so this is one variable vs `wave-cora`: the subgrid bed inside
+    # the federal channels of the southern lobe, replaced by USACE soundings.
+    #
+    # ⚠️ THE HONEST FRAMING. The evidence going in says this should do little: nothing
+    # down there is PAVED (the model already has every channel to within ~0.4 m of the
+    # soundings, against the 7 m error that dammed Shark River), the lagoon's mean depth
+    # already matches published values, and Point Pleasant Canal and the Mantoloking Bridge
+    # were both checked for baked-in decks and are clean (PPC thalweg max -5.73 m over
+    # 2.8 km; Mantoloking -2.67/-2.46 m vs soundings -1.91..-3.20 m). A carve also only
+    # ever REMOVES bed, which pushes conveyance further the wrong way for the one defect we
+    # can measure up-lagoon. This arm exists to SETTLE that empirically rather than argue
+    # it, which is a legitimate reason to spend a run. Record the prediction and check it:
+    # expect the Mantoloking pair to move little, and if anything to get slightly worse.
+    #
+    # What WOULD make it matter, and is worth looking for in the result: the VDatum offset
+    # field runs -0.73 m at Manasquan to -0.53 m at Barnegat, a 0.20 m gradient across the
+    # lobe. The scratch comparison that produced "+0.34 m too shallow" used a NOMINAL
+    # -0.50 m constant, so part of that gap was datum, not bed. The carve applies the real
+    # field, so its true depth change is smaller than +0.34 m and spatially varying.
+    #
+    # ⚠️ Staged from `_template_ehydro_south` (scripts/setup_ehydro_south_template.py),
+    # NOT `_template_sealed`. That template regenerates only the SUBGRID on the frozen mesh,
+    # so z/mask — and therefore the domain fingerprint — are untouched and this stays
+    # directly comparable to `wave-cora`. Analysis consequence: `sfincs.nc`'s `z` will NOT
+    # show the carve; read `sfincs_subgrid.nc`.
+    "wave-cora+bed-ehydro": Experiment(
+        "wave-cora+bed-ehydro",
+        WaveConfig(
+            use_waves=True, wave_wind=True, wave_igwaves=False, tune_physics=True,
+            wave_point_dataset=DATA / "waves" / "cora_waves_nj.nc",
+        ),
+        "CORA wave boundary AND the southern federal navigation channels carved from "
+        "USACE eHydro soundings (Barnegat/Manasquan inlets, the ICW, Point Pleasant "
+        "Canal, Toms River, Oyster Creek).",
+        waterlevel_geodataset=None,
+    ),
+    # ── mask-inlet (2026-07-30): stop imposing the ocean level inside the inlet ──
+    # Not a physics knob. A repair to a boundary condition that was never admissible,
+    # and the third of its kind here (Navesink drain, Manahawkin cut, this).
+    #
+    # THE DEFECT, measured on wave-cora+bed-ehydro's own output. `mask_zmin = -10`
+    # makes deeper cells inactive, so the water-level BC follows the -10 m isobath —
+    # which reaches THROUGH Barnegat Inlet (scoured to -14.8 m). 153 inactive islands
+    # appeared inside the model, 145 in the throat; create_boundary rimmed them; 193
+    # mask==2 cells ended up as far as 2.6 km inside the mouth, 75 m from the Barnegat
+    # Light gauge. Pre-storm tidal range on those cells: 1.465 m, against 1.461 m at
+    # the open-coast boundary off Sandy Hook and 0.707 m OBSERVED at Barnegat Light.
+    # The bay was being handed the ocean tide directly instead of through its inlet.
+    #
+    # Repaired by a topological hole-fill plus one always-active box over the gorge
+    # (nj_sfincs/domain.py), with both failures now asserted at build time.
+    #
+    # ⚠️ Staged from `_template_ehydro_inletmask` (scripts/setup_inlet_mask_template.py).
+    # The mask is part of the domain fingerprint, so — unlike bed-ehydro — this arm
+    # sits on a DIFFERENT domain from everything measured so far. That is the price of
+    # the fix and the reason this arm is its own control: `wave-cora+bed-ehydro` on the
+    # old mask is NOT a valid comparison for anything but direction.
+    #
+    # PRE-REGISTERED PREDICTIONS (written before the run, per the bed-ehydro lesson):
+    #   Barnegat Light range 1.368 m (wet-channel cells) -> DOWN toward 0.707 observed;
+    #     phase -43 min -> toward 0 or LATE.
+    #   Mantoloking range 0.401 -> down; -58 min -> later. Same direction, damped.
+    #   Along-bay gradient (obs +0.518 m, model -0.410 m) -> toward observed, because
+    #     the clamp is what has been holding the southern end up.
+    #   ⚠️ THE FALSIFIER, chosen now: `barnegat_bay` HWM bias is +0.005 on bed-ehydro
+    #     and some of that may be the clamp propping the bay up. EXPECT IT TO GO
+    #     NEGATIVE and bay CSI to drop. If it does, that is a real trade to weigh, not
+    #     a reason to revert — an inadmissible BC that scores well is still inadmissible.
+    "wave-cora+bed-ehydro+mask-inlet": Experiment(
+        "wave-cora+bed-ehydro+mask-inlet",
+        WaveConfig(
+            use_waves=True, wave_wind=True, wave_igwaves=False, tune_physics=True,
+            wave_point_dataset=DATA / "waves" / "cora_waves_nj.nc",
+        ),
+        "CORA waves + the eHydro southern carve + the Barnegat Inlet mask repair, so "
+        "the bay is forced through its inlet instead of having the open-ocean level "
+        "imposed 2.6 km inside the throat. The new v2 baseline.",
+        waterlevel_geodataset=None,
+    ),
+    # The same, plus the +24 min Battery phase advance.
+    #
+    # WHY IT IS A SEPARATE ARM AND NOT FOLDED IN. `tide-shift`'s only recorded cost on
+    # v2 was ~8 min of added BAY phase error, and that was scored against a bay whose
+    # phase WAS the clamp (-43 min = zero lag = the ocean's own signal). With the inlet
+    # unclamped, the bay phase becomes a real measurement of inlet + lagoon propagation
+    # for the first time, and its sign may flip to LATE like the coast — in which case
+    # tide-shift stops being a trade and becomes coherent everywhere. Folding both
+    # changes into one run would destroy exactly that measurement, so the two run in
+    # parallel: `wave-cora+bed-ehydro+mask-inlet` is this arm's control.
+    #
+    # PRE-REGISTERED: coast keeps tide-shift's win (Sandy Hook ~0 min, Shrewsbury/Shark
+    # ~15-19 min). The bay is the open question — if its phase error is LATE after the
+    # mask repair, this arm should improve it; if still EARLY, it should worsen it by
+    # ~8 min again. Either way the answer is informative and it is the reason to run it.
+    "wave-cora+bed-ehydro+mask-inlet+tide-shift": Experiment(
+        "wave-cora+bed-ehydro+mask-inlet+tide-shift",
+        WaveConfig(
+            use_waves=True, wave_wind=True, wave_igwaves=False, tune_physics=True,
+            wave_point_dataset=DATA / "waves" / "cora_waves_nj.nc",
+        ),
+        "CORA waves + eHydro carve + Barnegat Inlet mask repair AND the Battery tide "
+        "advanced +24 min. Re-asks the phase question against a bay that is finally "
+        "forced through its own inlet.",
+        waterlevel_geodataset="noaa_sandy_phaseshift",
+    ),
+    "wave-cora+bed-baymanning": Experiment(
+        "wave-cora+bed-baymanning",
+        WaveConfig(
+            use_waves=True, wave_wind=True, wave_igwaves=False, tune_physics=True,
+            wave_point_dataset=DATA / "waves" / "cora_waves_nj.nc",
+        ),
+        "CORA wave boundary AND Barnegat lagoon bed roughness raised 0.020 -> 0.035 "
+        "(SAV-dominated lagoon). Tests whether the up-lagoon over-amplitude and "
+        "early arrival are a friction deficit.",
+        waterlevel_geodataset=None,
+    ),
     "baseline_no_waves": Experiment(
         "baseline_no_waves",
         WaveConfig(use_waves=False),
@@ -416,14 +578,14 @@ EXPERIMENTS: dict[str, Experiment] = {
     # (corr 0.996, zero lag) across the mid-storm gap. Validated vs SH 6-min obs:
     # RMSE 0.103 m and pre-storm phase error 0 min, against 0.147 m / 24 min for the
     # Battery-anchored baseline. No extrapolation anywhere.
-    # ⛔ RETIRED 2026-07-26 — superseded by `phaselag_shift`. Run dir DELETED; the boundary
+    # ⛔ RETIRED 2026-07-26 — superseded by `tide-shift`. Run dir DELETED; the boundary
     # forcing file is preserved at archive/retired_composites/phaselag_composite/ and the
     # scored result at reports/phaselag_composite.csv. Do NOT re-run. See the v2 block below.
     "phaselag_composite": Experiment(
         "phaselag_composite",
         WaveConfig(use_waves=True, wave_wind=True, wave_igwaves=False, tune_physics=True),
         "⛔ RETIRED — NOAA harmonic tide + NTR (noaa_sandy_composite), 3 support points. "
-        "Fixed the phase but over-forced the coast. Superseded by phaselag_shift.",
+        "Fixed the phase but over-forced the coast. Superseded by tide-shift.",
         waterlevel_geodataset="noaa_sandy_composite",
     ),
     # ⭐ v2 (2026-07-22) — the arm that actually isolates PHASE from LEVEL.
@@ -437,7 +599,7 @@ EXPERIMENTS: dict[str, Experiment] = {
     # implied there (-0.004 m), where v1 sat at +0.243 m. Source phase still -3.3 min vs the
     # premier's +21.1. No fitted parameter anywhere.
     #
-    # ⛔ RETIRED 2026-07-26 — BOTH COMPOSITES ARE DEAD. `phaselag_shift` beats them on phase
+    # ⛔ RETIRED 2026-07-26 — BOTH COMPOSITES ARE DEAD. `tide-shift` beats them on phase
     # AND level simultaneously (SH lag -0.1 vs 6.7 min; HWM bias 0.302 vs 0.500; RMSE 0.466 vs
     # 0.606; within-0.5 74% vs 63%; SSS 2258 3.626 vs 3.837 against an observed 3.465).
     # Two independent reasons not to build a v3:
@@ -460,7 +622,7 @@ EXPERIMENTS: dict[str, Experiment] = {
         "phaselag_composite_v2",
         WaveConfig(use_waves=True, wave_wind=True, wave_igwaves=False, tune_physics=True),
         "⛔ RETIRED — local harmonic tide + interpolated NTR (noaa_sandy_composite_v2), "
-        "3 support points. Superseded by phaselag_shift; do not re-run.",
+        "3 support points. Superseded by tide-shift; do not re-run.",
         waterlevel_geodataset="noaa_sandy_composite_v2",
     ),
     # Phase fix done the way the plan's §5 actually specified — re-phase the EXISTING
@@ -470,8 +632,38 @@ EXPERIMENTS: dict[str, Experiment] = {
     # can sit off the Battery->AC surge line, which is exactly how v2 leaked +0.051 m
     # into a barrier-overwash threshold and lost the HWM score. One variable vs the
     # premier: tidal TIMING.
-    "phaselag_shift": Experiment(
-        "phaselag_shift",
+    #
+    # ── PORTED TO v2_barnegat (2026-07-28) ───────────────────────────────────
+    # The v2 control reproduces v1's phase defect almost exactly (17.8/35.1/35.2 min
+    # vs v1's 17.6/36.9/32.8), and `wave-cora` moves it by <=0.6 min — so the
+    # expansion neither created nor cured it, and the wave boundary cannot reach it.
+    # The fix has to be RE-RUN here rather than assumed to carry over: v2's 95-mark
+    # HWM set, its bay lobe and its two crest-surviving interior gauges are all new,
+    # and none of them existed when v1 concluded "the phase fix is free".
+    #
+    # What transfers vs what is re-tested:
+    #   TRANSFERS (a property of the forcing, not the mesh) — the Battery is a HARBOUR
+    #     gauge at +24 min; interpolating +24 -> AC's -18 predicts +16.7 min of lag at
+    #     Sandy Hook and the model measures +17.8. Measured at the source, no run
+    #     needed, so the diagnosis holds on any domain fed from these gauges.
+    #   RE-TESTED — everything downstream. v1 got -0.1/16.8/16.9 min at NO level cost
+    #     (bias 0.318 -> 0.302), best basin move `sandy_hook_bay` 0.090 -> 0.064.
+    #     v2 scores 3x the marks over 2x the mesh. The ~17 min that SURVIVED at
+    #     Shrewsbury/Shark is excess up-estuary travel time — the temporal twin of the
+    #     known amplitude over-damping — and nothing in this arm addresses it.
+    #
+    # ⚠️ The new risk this domain adds: the Battery anchor also sets the phase arriving
+    # at Barnegat Inlet, ~110 km further from it than anything v1 contained. Barnegat
+    # Light and Mantoloking survive the crest, so for the first time the interior phase
+    # is FALSIFIABLE rather than inferred. Read the along-bay pair, not just the marks.
+    #
+    # ⚠️ The Cape May trap applies here and is CHECKED, not remembered:
+    # noaa_sandy_phaseshift.nc carries the same three NOAA stations as noaa_sandy_nj.nc,
+    # and support points are chosen by BUFFERING the region — so a forcing swap re-runs
+    # that selection. v2's 60 km buffer keeps Cape May out; prepare_experiment asserts
+    # the count via model.check_waterlevel_support.
+    "tide-shift": Experiment(
+        "tide-shift",
         WaveConfig(use_waves=True, wave_wind=True, wave_igwaves=False, tune_physics=True),
         "Battery tide advanced +24 min to open-coast phase, 2 support points, NTR "
         "untouched. The phase-only experiment the composites were meant to be.",
@@ -541,18 +733,18 @@ EXPERIMENTS: dict[str, Experiment] = {
         waterlevel_geodataset="noaa_sandy_composite_v2",
     ),
     # ── The production candidate (2026-07-26) ────────────────────────────────
-    # snapwave_deep's wave knobs + phaselag_shift's boundary forcing. Both knobs
+    # snapwave_deep's wave knobs + tide-shift's boundary forcing. Both knobs
     # are orthogonal in this config — `waves` touches only snapwave_mask, and
     # `waterlevel_geodataset` only sfincs_netbndbzsbzifile.nc — so this arm is
     # exactly their union.
     #
-    # NOTE `phaselag_shift` already carries snapwave_mask_zmin=-30.0, but with
+    # NOTE `tide-shift` already carries snapwave_mask_zmin=-30.0, but with
     # decouple_snapwave=False that value is INERT: the flag is what activates it.
     # So the two parents differ in exactly one field each and this is their union.
     #
     # Why it is worth the 3 h. Each parent beats the premier on its own axis for a
     # reason that survives independently of the HWM score:
-    #   * phaselag_shift  — Sandy Hook lag 17.6 -> -0.1 min at NO level cost
+    #   * tide-shift  — Sandy Hook lag 17.6 -> -0.1 min at NO level cost
     #     (bias 0.318 -> 0.302). The +24 min Battery phase is an interpolation
     #     artifact, measured at the source, not a fitted correction.
     #   * snapwave_deep   — the premier imposes Hs 8.624 m at the ~10 m contour,

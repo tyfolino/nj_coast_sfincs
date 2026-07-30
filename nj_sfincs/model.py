@@ -74,8 +74,72 @@ def _open_coast_max_y() -> float:
     return float("inf") if y is None else y
 
 
+def _inactive_components(sf, mask):
+    """Split the inactive cells into (ocean-connected mass, interior holes).
+
+    "Ocean-connected" is just the LARGEST connected component of ``mask == 0``. On
+    this domain that single blob is the shelf plus all the dry land, which wrap
+    round each other continuously — 325,213 of 325,366 inactive cells on
+    v2_barnegat. Anything else is an inactive island sitting inside the model.
+
+    Returns ``(ocean, hole)`` boolean arrays over faces.
+    """
+    from scipy.sparse.csgraph import connected_components
+
+    inactive = mask == 0
+    if not inactive.any():
+        z = np.zeros(len(mask), dtype=bool)
+        return z, z
+    adj = sf.quadtree_grid.data.grid.face_face_connectivity
+    idx = np.flatnonzero(inactive)
+    _, lab = connected_components(adj[inactive][:, inactive], directed=False)
+    labels, counts = np.unique(lab, return_counts=True)
+    main = labels[np.argmax(counts)]
+    ocean = np.zeros(len(mask), dtype=bool)
+    hole = np.zeros(len(mask), dtype=bool)
+    ocean[idx[lab == main]] = True
+    hole[idx[lab != main]] = True
+    return ocean, hole
+
+
+def _fill_inactive_holes(sf, mask, zb) -> np.ndarray:
+    """Activate any inactive island that is not connected to the ocean/land mass.
+
+    A depth threshold is a statement about ELEVATION, but the mask it produces is a
+    statement about TOPOLOGY, and the two disagree wherever the isobath reaches
+    inside the model. ``mask_zmin = -10`` left 153 such cells on v2_barnegat: 145 in
+    the Barnegat Inlet throat (to -14.78 m), 3 in the Navesink, 1 at Manasquan. They
+    do two things, both bad. As islands they block conveyance through the one
+    cross-section that matters. As mask edges they make ``create_boundary`` impose
+    the open-ocean water level around them, kilometres inside an inlet.
+
+    So: fill them. This is deliberately topological rather than geometric — it needs
+    no hand-drawn box, and it therefore keeps working when the domain moves south,
+    when an eHydro carve deepens a channel, or when ``mask_zmin`` changes. It cannot
+    on its own fix an intrusion that stays CONNECTED to the sea (a scoured inlet
+    gorge is the case in point); that is what ``always_active_boxes_ll`` is for, and
+    the two are used together at Barnegat Inlet.
+
+    Runs BEFORE ``create_boundary`` — filling afterwards would leave the boundary
+    cells the holes had already spawned.
+    """
+    _, hole = _inactive_components(sf, mask)
+    n = int(hole.sum())
+    if not n:
+        print("[mask] no interior inactive holes")
+        return mask
+    fx, fy = sf.quadtree_grid.data.grid.face_coordinates.T
+    mask = mask.copy()
+    mask[hole] = 1
+    print(f"[mask] filled {n} interior inactive cells (deepest {zb[hole].min():+.2f} m; "
+          f"x {fx[hole].min():.0f}-{fx[hole].max():.0f}, "
+          f"y {fy[hole].min():.0f}-{fy[hole].max():.0f}) — an inactive island inside "
+          f"the model blocks conveyance AND spawns a water-level BC around itself")
+    return mask
+
+
 def _check_domain_invariants(sf, mask, zb) -> None:
-    """Refuse to ship a domain with either of the two defects that cost us two months.
+    """Refuse to ship a domain carrying any of the four defects listed below.
 
     Both bugs were INFRASTRUCTURE, not physics — a region polygon and an elevation
     tier — which is exactly why an exhaustive elimination of every *physical* lever
@@ -95,6 +159,18 @@ def _check_domain_invariants(sf, mask, zb) -> None:
        +0.00 m, never flooding, through Hurricane Sandy, while the ocean 1.8 km away
        reached +2.9 m. We check the model bed against the eHydro survey (a boat with
        an echo sounder) wherever that survey has data.
+
+    3. NO INTERIOR INACTIVE ISLANDS. The post-condition on ``_fill_inactive_holes``.
+       Cheap, and it fails loudly if the fill is ever removed or outrun.
+
+    4. NO IMPOSED OCEAN LEVEL WHERE THE DOMAIN DECLARES THERE MUST NOT BE ONE. This
+       is the third instance of one defect class in this project — the Navesink
+       (free outflow on a tidal river), the Manahawkin cut (waterlevel across an
+       interior bay), Barnegat Inlet (waterlevel 2.6 km inside the throat). Every one
+       of them passed every check that existed at the time, ran to completion, and
+       produced numbers nobody could tell were wrong. So each domain now DECLARES
+       where an open-ocean level is inadmissible, and the build refuses to ship one
+       there. See ``domain.NoWaterLevelBox``.
     """
     import rasterio
 
@@ -109,6 +185,28 @@ def _check_domain_invariants(sf, mask, zb) -> None:
             f"{OUTFLOW_MAX_DEPTH} m. That is a DRAIN, not a boundary — it is the bug "
             f"that emptied the Navesink."
         )
+
+    _, hole = _inactive_components(sf, mask)
+    if hole.any():
+        fx, fy = sf.quadtree_grid.data.grid.face_coordinates.T
+        fail.append(
+            f"{int(hole.sum())} inactive cells form islands INSIDE the model "
+            f"(deepest {zb[hole].min():+.2f} m, around x {fx[hole].mean():.0f} "
+            f"y {fy[hole].mean():.0f}). They block conveyance and make "
+            f"create_boundary impose an open-ocean level around them."
+        )
+
+    for zone in _domain.active().no_waterlevel_boxes:
+        xmin, ymin, xmax, ymax = zone.box
+        fx, fy = sf.quadtree_grid.data.grid.face_coordinates.T
+        sel = ((mask == 2) & (fx > xmin) & (fx < xmax)
+               & (fy > ymin) & (fy < ymax))
+        if sel.any():
+            fail.append(
+                f"{int(sel.sum())} water-level BC cells (mask=2) fall inside the "
+                f"no-waterlevel zone '{zone.name}' (deepest {zb[sel].min():+.2f} m). "
+                f"{zone.why}"
+            )
 
     tif = DATA / "elevation" / "ehydro_nj.tif"
     if tif.exists():
@@ -134,8 +232,9 @@ def _check_domain_invariants(sf, mask, zb) -> None:
         raise RuntimeError(
             "[build_static] DOMAIN INVARIANTS FAILED:\n  - " + "\n  - ".join(fail)
         )
-    print("[build_static] domain invariants OK "
-          "(no outflow BC on water; no paved-over surveyed channel)")
+    print("[build_static] domain invariants OK (no outflow BC on water; no paved-over "
+          "surveyed channel; no interior inactive islands; no imposed ocean level in a "
+          "declared no-waterlevel zone)")
 
 
 def apply_mask_and_boundary(base: BaseConfig, sf: SfincsModel) -> None:
@@ -165,6 +264,12 @@ def apply_mask_and_boundary(base: BaseConfig, sf: SfincsModel) -> None:
     _outside = ~shapely.contains_xy(_region, fx, fy)
     mask = sf.quadtree_grid.data["mask"].values.copy()
     mask[_outside] = 0
+
+    # 4b. Fill inactive islands ----------------------------------------------
+    # MUST come after the region clip (which creates its own inactive ground) and
+    # BEFORE create_boundary, which is what turns an island into a ring of imposed
+    # open-ocean level. See _fill_inactive_holes.
+    mask = _fill_inactive_holes(sf, mask, sf.quadtree_grid.data["z"].values)
     sf.quadtree_grid.data["mask"] = sf.quadtree_grid.data["mask"].copy(data=mask)
 
     # 5. Boundary cells -------------------------------------------------------
@@ -319,7 +424,8 @@ def build_static(base: BaseConfig, template_dir: Path, skip_subgrid: bool = Fals
             s._data = None
     gc.collect()
 
-    roughness_list = [{"lulc": "nlcd_2012", "reclass_table": str(base.reclass_table)}]
+    roughness_list = [{"lulc": base.roughness_lulc,
+                       "reclass_table": str(base.reclass_table)}]
     sf.quadtree_roughness.create(roughness_list=roughness_list, nrmax=200)
     sf.quadtree_subgrid.create(
         elevation_list=base.elevation(),

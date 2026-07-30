@@ -99,7 +99,25 @@ V1_MONMOUTH = DomainFingerprint(547408, 1635, "45f4f74ca9a2347d")
 #: v2_barnegat — v1 plus the southern lobe to Barnegat Inlet, built 2026-07-26 from
 #: data/frozen_mesh_v2_barnegat. 2.09x the faces of v1; v1's own footprint reproduces
 #: within it at 541,081 faces, so the north was not disturbed by the extension.
-V2_BARNEGAT = DomainFingerprint(1143357, 2164, "9ccbab0bc7a9fc0d")
+#:
+#: ⭐ REVISED 2026-07-30 — the Barnegat Inlet mask repair. Same mesh, same bed (`z` is
+#: byte-identical); what changed is the MASK, and the mask is half of this hash.
+#: `mask_zmin = -10` had left 153 inactive islands inside the model — 145 in the inlet
+#: throat, scoured to -14.8 m — and `create_boundary` rimmed them, imposing the
+#: open-ocean water level as far as 2.6 km inside the mouth, 75 m from the Barnegat
+#: Light gauge. Measured cost: a 1.465 m pre-storm tidal range on those cells against
+#: 1.461 m at the open-coast boundary and 0.707 m observed at the gauge. The bay was
+#: being driven by the ocean directly instead of through its inlet.
+#: After the repair: islands 153 -> 0, in-throat BC cells 114 -> 0, active +334,
+#: water-level BC cells 3,064 -> 2,911. See scripts/setup_inlet_mask_template.py.
+V2_BARNEGAT = DomainFingerprint(1143357, 2164, "3b1356b9590c59ff")
+
+#: The PRE-REPAIR v2 mask. Everything in the 2026-07-26..29 campaign — the premier,
+#: wave-cora, tide-shift, bed-baymanning, bed-ehydro — was measured on this domain, so
+#: it is not "wrong output" to be discarded but it is NOT comparable to anything built
+#: after the repair. Registered by name so an audit of those directories says which
+#: domain they are on instead of "UNRECOGNISED".
+V2_BARNEGAT_PREMASK = DomainFingerprint(1143357, 2164, "9ccbab0bc7a9fc0d")
 
 #: The pre-rebuild domain. Named so the error message can say *which* wrong domain it is.
 LEGACY = DomainFingerprint(547267, 1676, "ffc48087214bb848")
@@ -125,7 +143,10 @@ FROZEN_MESH = {
 }
 
 KNOWN = {V1_MONMOUTH: "v1_monmouth SEALED (leak fixed, Shark inlet carved)",
-         V2_BARNEGAT: "v2_barnegat (south to Barnegat Inlet, Manahawkin cut walled)",
+         V2_BARNEGAT: "v2_barnegat (south to Barnegat Inlet, Manahawkin cut walled, "
+                      "inlet mask repaired 2026-07-30)",
+         V2_BARNEGAT_PREMASK: "v2_barnegat PRE-REPAIR (open-ocean level imposed 2.6 km "
+                              "INSIDE Barnegat Inlet — the 2026-07-26..29 campaign)",
          LEGACY: "LEGACY pre-rebuild (Navesink LEAKING, Shark inlet DAMMED)"}
 
 

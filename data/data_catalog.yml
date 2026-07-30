@@ -113,6 +113,38 @@ ehydro_nj:
     source: USACE eHydro NJ_10_SRI_20150902_CS_4383_15 (Shark River Inlet, 2015-09-02 condition survey)
     url: https://services7.arcgis.com/n1YM8pTrFmm7L4hs/arcgis/rest/services/eHydro_Survey_Data/FeatureServer
 
+# ── The SOUTHERN carving tier (2026-07-28) ───────────────────────────────────
+# ehydro_nj above is Shark River Inlet ONLY — a 2.5 x 1 km raster at 40.18N. The v2 domain
+# reaches to 39.70N, and that entire southern lobe had no channel survey in the stack. This
+# tier adds the federal navigation channels inside it: Barnegat Inlet, Manasquan Inlet, the
+# NJ Intracoastal Waterway segments, Point Pleasant Canal, Toms River, Oyster Creek.
+#
+# ⚠️ THE TRAP THIS FILE EXISTS BECAUSE OF: eHydro's XYZ sign convention varies by USACE
+# district and this domain straddles the boundary. Shark River (NY District) ships NEGATIVE
+# ELEVATIONS; every southern survey (Philadelphia District) ships POSITIVE DEPTHS below
+# MLLW. The builder DETECTS this per survey — applying the northern formula to a southern
+# file yields positive "elevations", the water-only clip drops 100% of them, and the tier
+# silently produces an EMPTY raster with no error.
+#
+# ⚠️ Consuming it needs a SUBGRID rebuild on the frozen mesh, not a fresh template build:
+# build_static copies the frozen mesh's z/mask and returns early, so a new elevation tier
+# never reaches the coarse z. Leaving z/mask alone is deliberate — the subgrid tables are
+# what the solver uses for conveyance, and the domain fingerprint stays intact so the arm
+# remains comparable to `wave-cora`.
+# Build: python scripts/build_ehydro_south.py
+ehydro_south:
+  data_type: RasterDataset
+  uri: elevation/ehydro_south.tif
+  driver:
+    name: rasterio
+    options: {}
+  metadata:
+    category: topography
+    crs: 32618
+    unit: m+NAVD88
+    source: USACE eHydro, earliest available survey per navigation feature in the v2 southern lobe
+    url: https://services7.arcgis.com/n1YM8pTrFmm7L4hs/arcgis/rest/services/eHydro_Survey_Data/FeatureServer
+
 shrewsbury_ehydro_2015:
   data_type: RasterDataset
   uri: elevation/shrewsbury_ehydro_2015.tif
@@ -503,6 +535,34 @@ nlcd_2012:
     category: landuse
     source: NLCD Annual Land Cover 2012 (USGS/MRLC)
     url: https://www.mrlc.gov/data
+
+# ── bed-baymanning: the lagoon gets its own bed roughness ────────────────────
+# Byte-identical to nlcd_2012 EXCEPT that the 203,075 class-11 (Open Water) pixels inside
+# Barnegat Bay (182.8 km2, 3.4% of all open water in the raster) are re-coded to class 12,
+# which NLCD does not use. Paired with NLCD_CONUS_mapping_baymanning.csv = the normal table
+# plus `12 -> n = 0.035`; class 11 stays 0.020 everywhere else, so the ocean, the
+# Raritan/Sandy Hook lobe and the Shrewsbury are untouched (the north lobe is separately
+# known to be UNDER-forced, so a global bump would confound it).
+#
+# WHY: the inlet exchange is already right -- Barnegat Light's tidal range is 0.719 m
+# against 0.721 observed -- but 35 km up the lagoon Mantoloking holds 0.401 m against
+# 0.167 m and arrives 58 min EARLY. Too little dissipation, with the bathymetry already
+# correct (lagoon mean depth 1.57 m vs the published ~1.5 m; navigation channels within
+# 0.4 m of USACE soundings). 0.020 is a bare-sand number; Barnegat Bay is an SAV-dominated
+# lagoon where the published range is 0.025-0.045.
+#
+# ⚠️ Roughness feeds the SUBGRID tables, so this needs a TEMPLATE REBUILD
+# (scripts/setup_baymanning_template.py), NOT a prepare_experiment forcing swap.
+# Build: python scripts/build_bay_manning.py
+nlcd_2012_baymanning:
+  data_type: RasterDataset
+  uri: roughness/nlcd_2012_baymanning.tif
+  driver:
+    name: rasterio
+    options: {}
+  metadata:
+    category: landuse
+    source: NLCD 2012, Barnegat lagoon open water re-coded to class 12 (n = 0.035)
 
 # ── SnapWave wavemaker line ──────────────────────────────────────────────────
 # Alongshore LineString at the −5 m NAVD88 contour from CUDEM, trimmed to the

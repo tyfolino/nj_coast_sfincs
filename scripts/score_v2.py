@@ -32,7 +32,13 @@ import nj_sfincs  # noqa: F401  (PROJ primer)
 from nj_sfincs import premier, validate
 from nj_sfincs.config import ROOT
 
-ARMS = ["faber-waves-premier", "wave-cora"]
+#: Each arm is listed next to the control it is a single-variable delta against.
+#: `tide-shift` moves the tidal boundary phase off `faber-waves-premier`; the two `bed-`
+#: arms move the SUBGRID (roughness / elevation) off `wave-cora` on the same frozen mesh.
+ARMS = ["faber-waves-premier", "wave-cora",
+        "tide-shift",                        # vs faber-waves-premier
+        "wave-cora+bed-baymanning",          # vs wave-cora
+        "wave-cora+bed-ehydro"]              # vs wave-cora
 V1_HWM = Path("/cache/home/tpj8/nj_sandy_sfincs/data/validation/sandy_hwms.geojson")
 OUT = ROOT / "reports"
 
