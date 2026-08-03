@@ -1130,6 +1130,60 @@ def plot_gauge_verification(runs, root=None, data_dir=DATA, hours=None):
     return fig, axes
 
 
+def plot_interior_gauge_series(runs, root=None, data_dir=DATA, source="map",
+                               xlim=("2012-10-29", "2012-10-31"), panel_h=4.6):
+    """Observed vs modelled water level at the interior Barnegat Bay gauges.
+
+    One panel per gauge in ``validate.INTERIOR_GAUGES``. Dots = observed, lines =
+    modelled. Built on ``validate.interior_gauge_series``, so the sampling rule lives in
+    ONE place — the notebook used to carry its own copy of the gauge dict, the peak
+    floor and the wet-channel-cell sampling, which could (and did) drift from the
+    package.
+
+    ``source="map"`` samples wet channel cells near the true gauge coordinate; two of
+    the three obs points snap to DRY BANK cells (``point_zb`` +0.988 and +1.144) so the
+    his path is wrong for anything but the crest. See ``interior_gauge_metrics``.
+    """
+    import matplotlib.pyplot as plt
+    import pandas as pd            # not a module-level import in this file
+
+    from . import validate as _v
+
+    root = Path(root) if root else ROOT / "experiments"
+    if not isinstance(runs, dict):
+        runs = {r: r for r in runs}
+    runs = {k: v for k, v in runs.items() if (root / v / "sfincs_map.nc").exists()}
+    if not runs:
+        raise SystemExit("no finished runs among those given")
+
+    gauges = list(_v.INTERIOR_GAUGES)
+    colors = dict(zip(runs, plt.cm.viridis(np.linspace(0, 0.9, max(len(runs), 2)))))
+
+    fig, axes = plt.subplots(1, len(gauges), figsize=(5.7 * len(gauges), panel_h),
+                             sharey=True, squeeze=False)
+    for ax, g in zip(axes[0], gauges):
+        drew_obs = False
+        for label, name in runs.items():
+            df = _v.interior_gauge_series(root / name, g, data_dir, source=source)
+            if df.empty:
+                continue
+            if not drew_obs:
+                o = df["obs"].dropna()
+                ax.plot(o.index, o.values, "k.", ms=2.5, label="observed", zorder=5)
+                drew_obs = True
+            ax.plot(df.index, df["mod"].values, color=colors[label], lw=1.5, label=label)
+        ax.set(title=g.replace("_", " "))
+        if xlim:
+            ax.set_xlim(pd.Timestamp(xlim[0]), pd.Timestamp(xlim[1]))
+        ax.grid(alpha=0.3)
+        ax.tick_params(axis="x", rotation=30)
+    axes[0][0].set_ylabel("water level (m NAVD88)")
+    axes[0][0].legend(fontsize=7.5)
+    fig.suptitle(f"Interior Barnegat Bay gauges — modelled ({source}) vs observed")
+    fig.tight_layout()
+    return fig, axes[0]
+
+
 def plot_source_phase(sources, ref_lonlat=(-74.0091, 40.4669), data_dir=DATA):
     """Offshore tidal-phase lag of each FORCING SOURCE vs the observed Sandy Hook tide.
 
