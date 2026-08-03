@@ -393,6 +393,42 @@ _BARNEGAT_INLET_GORGE_LL = (-74.1163, 39.7538, -74.0860, 39.7850)
 # BC cells the un-repaired mask put in this box — i.e. everything actually inside the
 # throat, including both gauges. Chosen with margin rather than tuned to the edge; the
 # Cape May trap is what a knife-edge threshold costs.
+# ── Manahawkin cut ALARM (2026-08-03) ────────────────────────────────────────
+# `_MANAHAWKIN_CUT` above is the REPAIR. Until now there was no ALARM to go with it:
+# the cut was protected ONLY by that MaskOverride, so if the override were ever
+# reordered, renamed, or dropped, `_check_domain_invariants` would not notice and the
+# open-ocean level would silently return across the bay cross-section. That is the same
+# structural gap that produced the inlet clamp — a repair with no invariant behind it —
+# and it is closed here.
+#
+# ⚠️ THE EAST EDGE IS THE WHOLE DESIGN OF THIS BOX, exactly as for the inlet gorge.
+# The south edge crosses TWO different things and only one of them is interior water:
+#   x <= ~573,250   Manahawkin Bay proper, z down to -5.02   <- must never carry a BC
+#   x 573,250-574,283  Long Beach Island, dune crest to +5.81
+#   x >= 574,299    the OPEN ATLANTIC east of LBI, z -6.7..-10  <- a LEGITIMATE BC line
+# Condemn the third group and this "fix" would break the real seaward boundary. Measured
+# sweep over y 4,394,000-4,400,000 on `_template_ehydro_inletmask` (212 mask==2 cells in
+# that band, the westernmost at x = 574,299):
+#
+#     xmax      legitimate ocean BC cells condemned
+#     573,500        0
+#     573,900        0
+#     574,150        0     <- adopted, 149 m of margin
+#     574,300        1
+#     574,500        6
+#     575,000       18
+#
+# Chosen with margin rather than tuned to the edge; the Cape May trap is what a
+# knife-edge threshold costs. Re-run the sweep if the mesh or `mask_zmin` ever moves.
+_NO_WL_MANAHAWKIN = NoWaterLevelBox(
+    "manahawkin_cut", (569_000, 4_394_000, 574_150, 4_400_000),
+    "The 39.70 south edge crosses INTERIOR bay water at Manahawkin. An imposed "
+    "open-ocean level here drives Barnegat Bay from its southern end in parallel with "
+    "— and competing against — the inlet exchange this domain was extended to MEASURE. "
+    "The wall beyond is the honest choice: it omits the real Little Egg Inlet exchange, "
+    "which is bounded and local, whereas an imposed level actively pumps the lagoon.",
+)
+
 _NO_WL_BARNEGAT_INLET = NoWaterLevelBox(
     "barnegat_inlet", (575_600, 4_400_700, 578_150, 4_404_400),
     "The inlet throat is the exchange this domain was extended to MEASURE. An "
@@ -479,7 +515,7 @@ V2_BARNEGAT = Domain(
         (-74.28, 40.40, -73.95, 40.52),   # Raritan / Sandy Hook dredged channels (v1)
         _BARNEGAT_INLET_GORGE_LL,         # the inlet scour hole (2026-07-30)
     ),
-    no_waterlevel_boxes=(_NO_WL_BARNEGAT_INLET,),
+    no_waterlevel_boxes=(_NO_WL_BARNEGAT_INLET, _NO_WL_MANAHAWKIN),
     open_coast_max_y=4_476_000,
     hwm_rules=_V2_SOUTH_RULES + _V1_BASIN_RULES,
     plot_window=(578_500, 592_000, 4_462_000, 4_482_000),

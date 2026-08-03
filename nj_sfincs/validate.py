@@ -740,6 +740,411 @@ def gauge_phase_lag(mod, model_dir: Path, data_dir: Path = DATA,
     return out
 
 
+# ── Interior bay gauges (2026-08-03) ──────────────────────────────────────────
+# The v2_barnegat domain exists to reach two gauges that survive Sandy's peak
+# (domain.py: _BB_MANTOLOKING, _BB_BARNEGAT_LIGHT). Until now they were figure-path
+# only, so the mask repair could be scored on HWM/CSI but NOT on the bay behaviour it
+# was actually meant to fix. This folds them into evaluate().
+#
+# READ THE PAIR, NOT THE GAUGES. Observed, Mantoloking peaks 0.518 m HIGHER and
+# ~5.9 h LATER than Barnegat Light. Matching either alone is easy — a uniform level
+# offset does it. Matching the DIFFERENCE is the bay-conveyance / inlet-exchange test,
+# so ``ig_alongbay_*`` and ``ig_peaktime_*`` below are the headline numbers here.
+
+#: Peak searches are floored here. Before this instant the run is still draining its
+#: initial condition, and a plain argmax over the full window picks the SPIN-UP
+#: TRANSIENT rather than Sandy — which silently turns a peak-timing metric into a
+#: measurement of the initial condition.
+PEAK_FLOOR = np.datetime64("2012-10-29")
+
+#: (his station substring, lon, lat, obs file, obs var, obs station id)
+INTERIOR_GAUGES = {
+    "mantoloking": ("usgs_tidal_bb_mantoloking", -74.0544444, 40.0405556,
+                    "usgs_sandy_tidal_nj.nc", "waterlevel", 1408168),
+    "barnegat_light": ("usgs_tidal_bb_barnegat_light", -74.1105556, 39.7608333,
+                       "usgs_sandy_tidal_nj.nc", "waterlevel", 1409125),
+    "barnegat_inlet_sss": ("usgs_stormtide_barnegat_inlet", -74.104167, 39.763611,
+                           "sandy_storm_tide_nj.nc", "stormtide_m", 2260),
+}
+
+#: Gauges whose pre-storm TIDE is scored (range + phase). The SSS unit is a storm-tide
+#: deployment with no usable pre-storm tide, so it contributes a peak only.
+INTERIOR_TIDE_GAUGES = ("mantoloking", "barnegat_light")
+
+
+def _aligned_pair(tm, vm, to, vo, t0, t1, dt_s):
+    """Resample model and obs onto ONE shared absolute time grid. Returns (m, o) or None.
+
+    ⚠️ WHY THIS EXISTS — ``_uniform_series`` IS NOT SAFE FOR A NEW GAUGE.
+    ``_uniform_series`` clips its grid to each series' OWN coverage
+    (``grid[(grid >= ts.min()) & (grid <= ts.max())]``) and returns bare values with no
+    time axis. ``_xcorr_lag_minutes`` then aligns the two arrays by INDEX 0. So if the
+    model and obs do not begin at the same instant inside [t0, t1], sample 0 of one is
+    a different wall-clock time from sample 0 of the other and the reported lag is
+    silently offset by that difference. That is exactly the bug that made
+    ``plots._phase_tag`` print +35 min against a scored 17.8 (see
+    [[project_tidal_phase_lag]]).
+
+    Here both series are interpolated onto the SAME grid, spanning only the overlap
+    both actually cover, so index 0 is one instant. Returns None if the overlap is too
+    short to correlate.
+
+    The existing callers of ``_uniform_series`` are deliberately left alone: their
+    numbers are in the scored campaign and changing the alignment would move published
+    lags. Their windows are covered by both series, so they are correct in practice.
+    """
+    def _clean(t, v):
+        t = np.asarray(t)
+        v = np.asarray(v, float).ravel()
+        if t.shape[0] != v.shape[0]:
+            return None
+        ok = np.isfinite(v) & (t >= t0) & (t <= t1)
+        if ok.sum() < 4:
+            return None
+        ts = (t[ok] - t0) / np.timedelta64(1, "s")
+        order = np.argsort(ts)
+        return ts[order], v[ok][order]
+
+    a, b = _clean(tm, vm), _clean(to, vo)
+    if a is None or b is None:
+        return None
+    lo = max(a[0].min(), b[0].min())          # common coverage only
+    hi = min(a[0].max(), b[0].max())
+    if hi - lo < 6 * dt_s:
+        return None
+    grid = np.arange(lo, hi + dt_s, dt_s)
+    grid = grid[grid <= hi]
+    if grid.size < 6:
+        return None
+    return np.interp(grid, a[0], a[1]), np.interp(grid, b[0], b[1])
+
+
+def _peak_after_floor(times, values):
+    """(peak value, peak time) over samples at/after PEAK_FLOOR; (nan, None) if none."""
+    t = np.asarray(times)
+    v = np.asarray(values, float).ravel()
+    ok = np.isfinite(v) & (t >= PEAK_FLOOR)
+    if not ok.any():
+        return float("nan"), None
+    i = int(np.nanargmax(v[ok]))
+    return float(v[ok][i]), t[ok][i]
+
+
+def interior_gauge_metrics(mod, model_dir: Path, data_dir: Path = DATA,
+                           hours: float = 24.0) -> dict:
+    """Level, peak timing, tidal range and phase at the interior Barnegat Bay gauges.
+
+    SOURCE PER QUANTITY — the his point is right for one of these and wrong for the other:
+
+    * **Peak level/time — his (10-min).** Two of the three obs points snap to DRY BANK
+      cells (Barnegat Light ``point_zb`` +0.988, SSS +1.144). That does NOT invalidate
+      the PEAK: at the crest the local water surface is continuous, so a bank cell and
+      the adjacent channel share the same ``zs`` — the same argument
+      ``shrewsbury_gauge_peak`` already relies on. And his is 10-min, so it resolves the
+      crest that the hourly map would alias.
+    * **Pre-storm range/phase — map at wet channel cells.** Here the bank cell is fatal:
+      the pre-storm tide is ~0.7 m about NAVD88 0, so a +0.988 m cell is DRY for the
+      whole window and its "tide" is an artifact. Sampled at ``_wet_channel_cells`` like
+      ``tidal_range_metric``/``gauge_phase_lag`` do for Shark River. Cost: the map is
+      hourly, so lag resolution is coarse and the range is a mild under-estimate.
+
+    ``ig_n_channel_cells_<g>`` is reported so a NaN range/phase is visibly "no wet
+    channel cell found" rather than an unexplained blank.
+    """
+    model_dir = Path(model_dir)
+    out: dict = {}
+    obs_cache: dict = {}
+    peaks: dict = {}
+
+    for g, (sub, lon, lat, fn, var, sid) in INTERIOR_GAUGES.items():
+        ds = obs_cache.get(fn)
+        if ds is None:
+            p = Path(data_dir) / "gtsm" / fn
+            if not p.is_file():
+                continue
+            ds = obs_cache[fn] = xr.open_dataset(str(p))
+        if var not in ds or sid not in set(np.asarray(ds["stations"].values).tolist()):
+            continue
+        o = ds[var].sel(stations=sid)
+        o_peak, o_time = _peak_after_floor(o["time"].values, o.values)
+
+        mser = _his_series(mod, sub)
+        m_peak, m_time = (float("nan"), None)
+        if mser is not None:
+            m_peak, m_time = _peak_after_floor(mser[0], mser[1])
+
+        out[f"ig_obs_peak_{g}_m"] = round(o_peak, 3)
+        out[f"ig_obs_peak_time_{g}"] = str(o_time)[:16] if o_time is not None else ""
+        out[f"ig_mod_peak_{g}_m"] = round(m_peak, 3)
+        out[f"ig_mod_peak_time_{g}"] = str(m_time)[:16] if m_time is not None else ""
+        out[f"ig_peak_err_{g}_m"] = round(m_peak - o_peak, 3)
+        out[f"ig_peak_lag_{g}_min"] = (
+            round(float((m_time - o_time) / np.timedelta64(1, "m")), 1)
+            if (m_time is not None and o_time is not None) else float("nan")
+        )
+        peaks[g] = dict(obs=o_peak, mod=m_peak, obs_t=o_time, mod_t=m_time)
+
+    # ── the SAME peak, sampled from the MAP at wet channel cells ──────────────
+    # Two defensible paths disagree slightly, so report BOTH rather than picking one
+    # silently. his is 10-min and resolves the crest but sits on a bank cell at two of
+    # the three gauges; the map is sampled in a genuine channel but is HOURLY, so it
+    # aliases the crest and reads a little low. The along-bay gradient below is the
+    # headline number of this whole domain — if the two paths agree on its SIGN and
+    # rough magnitude, the conclusion does not rest on that choice.
+    mp = xr.open_dataset(model_dir / "sfincs_map.nc")
+    mt = mp["time"].values
+    map_peaks: dict = {}
+    for g, (sub, lon, lat, fn, var, sid) in INTERIOR_GAUGES.items():
+        cells = _wet_channel_cells(model_dir, lon, lat)
+        if cells is None:
+            continue
+        idx, _, _ = cells
+        zsw = zs_at_faces(model_dir, idx)          # one contiguous read, memoised
+        full = np.isfinite(zsw).all(axis=0)
+        if not full.any():
+            continue
+        series = np.median(zsw[:, full], axis=1)
+        pk, tk = _peak_after_floor(mt, series)
+        map_peaks[g] = dict(mod=pk, mod_t=tk)
+        out[f"ig_modmap_peak_{g}_m"] = round(pk, 3)
+        if g in peaks and np.isfinite(peaks[g]["obs"]):
+            out[f"ig_modmap_peak_err_{g}_m"] = round(pk - peaks[g]["obs"], 3)
+
+    mlm, blm = map_peaks.get("mantoloking"), map_peaks.get("barnegat_light")
+    _mo, _bo = peaks.get("mantoloking"), peaks.get("barnegat_light")
+    if mlm and blm and _mo and _bo:
+        out["ig_modmap_alongbay_m"] = round(mlm["mod"] - blm["mod"], 3)
+        out["ig_modmap_alongbay_err_m"] = round(
+            (mlm["mod"] - blm["mod"]) - (_mo["obs"] - _bo["obs"]), 3)
+
+    # ── pre-storm tide at wet channel cells ───────────────────────────────────
+    t0, t1 = _prestorm_window(mp["time"].values, hours)
+    for g in INTERIOR_TIDE_GAUGES:
+        sub, lon, lat, fn, var, sid = INTERIOR_GAUGES[g]
+        ds = obs_cache.get(fn)
+        obs_range = float("nan")
+        if ds is not None and var in ds:
+            o = ds[var].sel(stations=sid)
+            ot = o["time"].values
+            ow = o.values[(ot >= t0) & (ot <= t1)]
+            ow = ow[np.isfinite(ow)]
+            if ow.size:
+                obs_range = float(ow.max() - ow.min())
+
+        mod_range, lag, is_tidal, ncell = float("nan"), float("nan"), False, 0
+        cells = _wet_channel_cells(model_dir, lon, lat)
+        if cells is not None:
+            idx, _, _ = cells
+            ncell = int(idx.size)
+            tsel = (mp["time"].values >= t0) & (mp["time"].values <= t1)
+            zsw = mp["zs"].isel(time=tsel, nmesh2d_face=idx).values
+            full = np.isfinite(zsw).all(axis=0)
+            if full.any() and tsel.sum() >= 6:
+                series = np.median(zsw[:, full], axis=1)
+                sig = _tidal_signal(series)
+                is_tidal = sig["is_tidal"]
+                mod_range = sig["range_m"] if is_tidal else float("nan")
+                if is_tidal and ds is not None and var in ds:
+                    o = ds[var].sel(stations=sid)
+                    pair = _aligned_pair(mp["time"].values[tsel], series,
+                                         o["time"].values, o.values, t0, t1, 3600.0)
+                    if pair is not None:
+                        lag = _xcorr_lag_minutes(pair[0], pair[1], 3600.0)
+
+        out[f"ig_n_channel_cells_{g}"] = ncell
+        out[f"ig_tide_obs_range_{g}_m"] = round(obs_range, 3)
+        out[f"ig_tide_mod_range_{g}_m"] = round(mod_range, 3)
+        out[f"ig_tide_is_tidal_{g}"] = is_tidal
+        out[f"ig_tide_range_err_{g}_m"] = round(mod_range - obs_range, 3)
+        out[f"ig_phase_lag_{g}_min"] = round(lag, 1)
+
+    # ── THE PAIR: along-bay gradient and peak-time separation ─────────────────
+    # Mantoloking minus Barnegat Light. These two lines are the actual test; the
+    # per-gauge numbers above are their ingredients.
+    ml, bl = peaks.get("mantoloking"), peaks.get("barnegat_light")
+    if ml and bl:
+        out["ig_alongbay_obs_m"] = round(ml["obs"] - bl["obs"], 3)
+        out["ig_alongbay_mod_m"] = round(ml["mod"] - bl["mod"], 3)
+        out["ig_alongbay_err_m"] = round((ml["mod"] - bl["mod"]) - (ml["obs"] - bl["obs"]), 3)
+        if all(x is not None for x in (ml["obs_t"], bl["obs_t"], ml["mod_t"], bl["mod_t"])):
+            oh = float((ml["obs_t"] - bl["obs_t"]) / np.timedelta64(1, "h"))
+            mh = float((ml["mod_t"] - bl["mod_t"]) / np.timedelta64(1, "h"))
+            out["ig_peaktime_obs_h"] = round(oh, 2)
+            out["ig_peaktime_mod_h"] = round(mh, 2)
+            out["ig_peaktime_err_h"] = round(mh - oh, 2)
+    return out
+
+
+# ── Bay error decomposition (2026-08-03) ──────────────────────────────────────
+# WHY THIS EXISTS. `ig_alongbay_*` is peak-minus-peak, and the two bay gauges peak ~6 h
+# apart, so it compares Barnegat Light at 00:24 (when the along-bay difference is ≈ -1.5 m)
+# against Mantoloking at 06:18 (when it is ≈ +1.1 m). That statistic reported an INVERTED
+# gradient and sent a whole day's diagnosis after a "bay conveyance defect" that does not
+# exist: at MATCHED instants the model reproduces the gradient's sign, its sign-flip time
+# and ~61% of its magnitude. The real defect is a cumulative VOLUME deficit.
+#
+# So this splits the bay error into two terms that have DIFFERENT physical causes:
+#   volume = mean(err_north, err_south)  -> inlet exchange / southern connection / boundary
+#   tilt   = err_north - err_south       -> wind stress / friction / conveyance
+# and reports the matched-instant gradient under a name that cannot be confused with the
+# peak-to-peak one.
+
+#: Default window: from the along-bay wind reversal through the observed Mantoloking peak
+#: and its decay. Sandy passes south of the bay ~10-30 00:00; before that the wind drives
+#: water SOUTH, after it drives water NORTH. A wind-driven tilt error MUST appear at that
+#: reversal, which is what makes the crossing time a discriminator rather than a curiosity.
+BAY_WINDOW = (np.datetime64("2012-10-29T18:00"), np.datetime64("2012-10-30T18:00"))
+
+#: The along-bay wind reversal in the ERA5 forcing (measured from sfincs_netamuv.nc:
+#: the bay-axis wind component crosses zero between 10-29 23:00 and 10-30 00:00).
+WIND_REVERSAL = np.datetime64("2012-10-29T23:00")
+
+
+def interior_gauge_series(model_dir: Path, gauge: str, data_dir: Path = DATA,
+                          source: str = "map") -> "pd.DataFrame":
+    """Observed + modelled water level and error at one interior gauge, on ONE clock.
+
+    Returns a DataFrame indexed by the MODEL clock with columns ``obs``, ``mod``, ``err``
+    (= mod - obs). Observations are interpolated onto that clock and are NaN outside
+    their own coverage — never extrapolated.
+
+    ``source``:
+      * ``"map"`` (default) — median over wet channel cells near the gauge, hourly.
+        The default because two of the three interior obs points snap to DRY BANK cells
+        (``point_zb`` +0.988 and +1.144); see ``interior_gauge_metrics``.
+      * ``"his"`` — the SFINCS observation point, 10-min. Resolves the crest better but
+        is a bank cell at Barnegat Light and the SSS unit.
+
+    ``gauge`` is a key of ``INTERIOR_GAUGES``.
+    """
+    if gauge not in INTERIOR_GAUGES:
+        raise KeyError(f"unknown interior gauge {gauge!r}; known: {sorted(INTERIOR_GAUGES)}")
+    sub, lon, lat, fn, var, sid = INTERIOR_GAUGES[gauge]
+    model_dir = Path(model_dir)
+
+    if source == "map":
+        cells = _wet_channel_cells(model_dir, lon, lat)
+        if cells is None:
+            return pd.DataFrame(columns=["obs", "mod", "err"])
+        idx, _, _ = cells
+        zsw = zs_at_faces(model_dir, idx)
+        full = np.isfinite(zsw).all(axis=0)
+        if not full.any():
+            return pd.DataFrame(columns=["obs", "mod", "err"])
+        mt = xr.open_dataset(model_dir / "sfincs_map.nc")["time"].values
+        mv = np.median(zsw[:, full], axis=1)
+    elif source == "his":
+        from hydromt_sfincs import SfincsModel
+
+        mod = SfincsModel(str(model_dir), data_libs=[str(Path(data_dir) / "data_catalog.yml")],
+                          mode="r")
+        read_output(mod)
+        ser = _his_series(mod, sub)
+        if ser is None:
+            return pd.DataFrame(columns=["obs", "mod", "err"])
+        mt, mv = ser[0], np.asarray(ser[1], float).ravel()
+    else:
+        raise ValueError(f"source must be 'map' or 'his', not {source!r}")
+
+    p = Path(data_dir) / "gtsm" / fn
+    obs = np.full(mt.shape, np.nan)
+    if p.is_file():
+        ds = xr.open_dataset(str(p))
+        if var in ds and sid in set(np.asarray(ds["stations"].values).tolist()):
+            o = ds[var].sel(stations=sid)
+            ot, ov = o["time"].values, np.asarray(o.values, float).ravel()
+            ok = np.isfinite(ov)
+            if ok.sum() >= 2:
+                # interp on seconds; mask outside obs coverage rather than extrapolating
+                t0 = ot[ok][0]
+                xs = (ot[ok] - t0) / np.timedelta64(1, "s")
+                xt = (mt - t0) / np.timedelta64(1, "s")
+                obs = np.interp(xt, xs, ov[ok], left=np.nan, right=np.nan)
+
+    df = pd.DataFrame({"obs": obs, "mod": mv}, index=pd.to_datetime(mt))
+    df["err"] = df["mod"] - df["obs"]
+    return df
+
+
+def bay_error_decomposition(model_dir: Path, data_dir: Path = DATA,
+                            north: str = "mantoloking", south: str = "barnegat_light",
+                            t0=None, t1=None, source: str = "map") -> dict:
+    """Split the Barnegat Bay error into a VOLUME term and a TILT term.
+
+        volume = mean(err_north, err_south)   -> inlet / southern connection / boundary
+        tilt   = err_north - err_south        -> wind stress / friction / conveyance
+
+    THIS COSTS NO SOLVER TIME and is the intended gate on the expensive arms:
+
+      * a TILT-dominated error whose sign flip tracks ``WIND_REVERSAL`` points at the
+        wind forcing (ERA5's 10 m wind over Barnegat Bay is diagnosed against LAND
+        roughness while SFINCS applies a marine drag law);
+      * a VOLUME-dominated error with no wind-reversal signature points at a missing
+        water source — the southern lagoon walled off at lat 39.70.
+
+    ``alongbay_matched_m`` is the gradient at MATCHED INSTANTS. It is a DIFFERENT
+    QUANTITY from ``ig_alongbay_*`` (peak-minus-peak at unequal times) and the two must
+    never be reported under one name — conflating them is what produced the false
+    "inverted gradient" finding on 2026-08-03.
+    """
+    a = interior_gauge_series(model_dir, north, data_dir, source=source)
+    b = interior_gauge_series(model_dir, south, data_dir, source=source)
+    if a.empty or b.empty:
+        return {}
+
+    t0 = BAY_WINDOW[0] if t0 is None else np.datetime64(t0)
+    t1 = BAY_WINDOW[1] if t1 is None else np.datetime64(t1)
+    j = a.join(b, lsuffix="_n", rsuffix="_s").loc[str(t0):str(t1)]
+    j = j[np.isfinite(j[["obs_n", "obs_s", "mod_n", "mod_s"]]).all(axis=1)]
+    if len(j) < 3:
+        return {}
+
+    err_n, err_s = j["err_n"].to_numpy(), j["err_s"].to_numpy()
+    volume = 0.5 * (err_n + err_s)
+    tilt = err_n - err_s
+    obs_tilt = (j["obs_n"] - j["obs_s"]).to_numpy()
+    mod_tilt = (j["mod_n"] - j["mod_s"]).to_numpy()
+    times = j.index.to_numpy()
+
+    def _cross(v):
+        """First time the series changes sign (or None) — the discriminator."""
+        s = np.sign(v)
+        k = np.where(np.diff(s) != 0)[0]
+        return str(times[k[0] + 1])[:16] if k.size else ""
+
+    # matched-instant gradient, evaluated where the OBSERVED tilt is largest
+    i = int(np.argmax(obs_tilt))
+    out = {
+        "bay_n_gauge": north, "bay_s_gauge": south, "bay_source": source,
+        "bay_n": len(j),
+        "bay_window": f"{str(t0)[:16]}..{str(t1)[:16]}",
+        # --- the two terms ---
+        "bay_volume_err_mean_m": round(float(volume.mean()), 3),
+        "bay_volume_err_final_m": round(float(volume[-1]), 3),
+        "bay_volume_err_absmax_m": round(float(volume[np.argmax(np.abs(volume))]), 3),
+        "bay_tilt_err_mean_m": round(float(tilt.mean()), 3),
+        "bay_tilt_err_final_m": round(float(tilt[-1]), 3),
+        "bay_tilt_err_absmax_m": round(float(tilt[np.argmax(np.abs(tilt))]), 3),
+        # which term dominates
+        "bay_dominant_term": ("tilt" if np.abs(tilt).mean() > np.abs(volume).mean()
+                              else "volume"),
+        "bay_tilt_over_volume": round(float(np.abs(tilt).mean()
+                                            / max(np.abs(volume).mean(), 1e-9)), 2),
+        # --- matched-instant gradient (NOT ig_alongbay_*) ---
+        "alongbay_obs_max_m": round(float(obs_tilt[i]), 3),
+        "alongbay_matched_m": round(float(mod_tilt[i]), 3),
+        "alongbay_matched_ratio": round(float(mod_tilt[i] / obs_tilt[i]), 3)
+        if abs(obs_tilt[i]) > 1e-9 else float("nan"),
+        "alongbay_at": str(times[i])[:16],
+        # --- sign-flip timing: does the model turn when the wind turns? ---
+        "alongbay_obs_flip": _cross(obs_tilt),
+        "alongbay_mod_flip": _cross(mod_tilt),
+        "wind_reversal": str(WIND_REVERSAL)[:16],
+        "bay_err_n_flip": _cross(err_n),
+    }
+    return out
+
+
 def _catalog_uri(key: str, data_dir: Path = DATA) -> Path | None:
     """Resolve a data-catalog geodataset key to its .nc path (yaml lookup)."""
     import yaml
@@ -1071,6 +1476,7 @@ def evaluate(model_dir: Path, data_dir: Path = DATA,
         (shrewsbury_gauge_peak, (mod,)),
         (tidal_range_metric, (model_dir, data_dir)),
         (gauge_phase_lag, (mod, model_dir, data_dir)),
+        (interior_gauge_metrics, (mod, model_dir, data_dir)),
         (hwm_metrics, (da_hmax, da_dep, data_dir, hwm_ids, hwm_estimator)),
         (motf_metrics, (da_hmax, da_dep, data_dir)),
         (sandy_hook_bay_hm0, (mod,)),
