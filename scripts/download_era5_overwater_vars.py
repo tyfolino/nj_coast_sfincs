@@ -33,6 +33,7 @@ Prerequisites: ~/.cdsapirc with a CDS token; ERA5 single-levels terms accepted.
 from pathlib import Path
 
 import cdsapi
+import numpy as np
 import xarray as xr
 
 OUTPUT_DIR = Path(__file__).resolve().parents[1] / "data" / "era5"
@@ -81,18 +82,35 @@ def main() -> int:
         if src in ds.variables or src in ds.dims:
             rename[src] = dst
     ds = ds.rename(rename)
-    if "y" in ds.coords and ds["y"].values[0] > ds["y"].values[-1]:
-        ds = ds.isel(y=slice(None, None, -1))       # north-up -> ascending, as the wind file
 
-    # Alignment is the whole point — assert it rather than hope.
+    # ⚠️ ALIGN TO THE WIND FILE'S AXIS ORDER — DO NOT ASSUME ONE.
+    # This originally flipped y "to ascending, as the wind file". The wind file is
+    # DESCENDING (42 -> 37). The result was a latitude-flipped field that passed a
+    # size-only assertion (21 == 21) and produced a silently upside-down correction:
+    # ocean cells got the bay's roughness and vice versa. Caught only because the
+    # buoy falsifier came back 1.12 instead of 1.00.
+    #
+    # The lesson is the assertion, not the flip: CHECKING SHAPE IS NOT CHECKING
+    # ALIGNMENT. Compare coordinate VALUES.
     if ORIGINAL.exists():
         o = xr.open_dataset(ORIGINAL)
         for c in ("y", "x"):
+            if (ds.sizes[c] == o.sizes[c]
+                    and np.allclose(np.sort(ds[c].values), np.sort(o[c].values))
+                    and not np.allclose(ds[c].values, o[c].values)):
+                ds = ds.isel({c: slice(None, None, -1)})     # same axis, reversed
             assert ds.sizes[c] == o.sizes[c], (
-                f"{c} size {ds.sizes[c]} != wind file {o.sizes[c]} — grids differ, "
-                "the conversion would silently interpolate"
-            )
-        print(f"  grid matches {ORIGINAL.name}: y={ds.sizes['y']} x={ds.sizes['x']}")
+                f"{c} size {ds.sizes[c]} != wind file {o.sizes[c]} — grids differ")
+            assert np.allclose(ds[c].values, o[c].values), (
+                f"{c} COORDINATE VALUES differ from {ORIGINAL.name} after alignment — "
+                "refusing to write a field that would be silently misregistered")
+        assert np.array_equal(ds["time"].values, o["time"].values), \
+            "time axis differs from the wind file"
+        print(f"  grid + time VALUES match {ORIGINAL.name} "
+              f"(y={ds.sizes['y']} {ds.y.values[0]:.2f}->{ds.y.values[-1]:.2f}, "
+              f"x={ds.sizes['x']})")
+    else:
+        print("  ⚠️ original wind file absent — alignment NOT verified")
 
     ds.to_netcdf(OUT)
     print(f"\nwrote {OUT}")

@@ -634,6 +634,44 @@ def _extent(da):
             float(y.min()) - dy, float(y.max()) + dy)
 
 
+#: Roughly how many pixels a panel is actually drawn at. Feeding imshow much more than
+#: this is pure waste — matplotlib resamples it all down to the same figure.
+_DISPLAY_PX = 1600
+
+
+def _for_display(da, window=None, max_px: int = _DISPLAY_PX):
+    """Crop a raster to ``window`` and decimate it to display resolution.
+
+    ⚡ WHY (2026-08-03). The de-rotated v2 rasters are ~171 Mpx (14596 x 11684). The
+    panel plotters were handing the WHOLE array to ``imshow`` and then cropping with
+    ``set_xlim``, so matplotlib resampled 171 Mpx per panel — three panels = 513 Mpx —
+    to fill a figure about 1600 px wide. That is ~10^5x oversampling and it was the
+    reason the HWM panel took minutes.
+
+    Cropping first and striding to ~``max_px`` is visually identical at figure
+    resolution (the decimation factor is chosen so the result is still >= the drawn
+    pixel count) and costs a small fraction of the time.
+
+    ``window`` is ``(xmin, xmax, ymin, ymax)`` in the raster's CRS, or None for no crop.
+    Returns ``(values_2d, extent)`` ready for ``imshow(..., origin="upper")``.
+    """
+    x, y = da["x"].values, da["y"].values
+    if window is not None:
+        xmin, xmax, ymin, ymax = window
+        ix = np.where((x >= xmin) & (x <= xmax))[0]
+        iy = np.where((y >= ymin) & (y <= ymax))[0]
+        if ix.size and iy.size:
+            da = da.isel(x=slice(int(ix[0]), int(ix[-1]) + 1),
+                         y=slice(int(iy[0]), int(iy[-1]) + 1))
+    v = da.values
+    v = v[0] if v.ndim == 3 else v
+    step = max(1, int(np.ceil(max(v.shape) / max_px)))
+    if step > 1:
+        v = v[::step, ::step]
+        da = da.isel(y=slice(None, None, step), x=slice(None, None, step))
+    return v, _extent(da)
+
+
 def plot_engine_panels(runs, root=None, window=SHREWSBURY_WINDOW, vmax=3.0,
                        hwm=True, ncol=None, panel_h=7.0, data_dir=DATA):
     """Max flood depth for several runs side by side, zoomed on the estuary.
@@ -1259,9 +1297,11 @@ def plot_hwm_residual_panels(runs, root=None, data_dir=DATA, ncol=2):
         # only ever uses the two rasters.
         _, hmax, dep = load_floodmap(root / name, need_model=False)
         hwm, obs, mod_wse, resid, wet, qual = _sample_hwm(hmax, dep, data_dir)
-        ext = _extent(dep)
-        _2d = lambda a: a[0] if a.ndim == 3 else a
-        ax.imshow(_2d(dep.values), extent=ext, origin="upper", cmap="Greys_r",
+        # Crop + decimate to the window BEFORE drawing — see _for_display. Sampling of
+        # the marks above still uses the FULL-resolution raster; only the grey backdrop
+        # is reduced, so no number on this figure changes.
+        bg, ext = _for_display(dep, window=win)
+        ax.imshow(bg, extent=ext, origin="upper", cmap="Greys_r",
                   vmin=-15, vmax=25, alpha=0.55, interpolation="nearest")
         hx, hy = hwm.geometry.x.values, hwm.geometry.y.values
         sc = ax.scatter(hx[wet], hy[wet], c=resid[wet], cmap="RdBu_r", vmin=-1.5,

@@ -138,7 +138,8 @@ def _fill_inactive_holes(sf, mask, zb) -> np.ndarray:
     return mask
 
 
-def _check_domain_invariants(sf, mask, zb) -> None:
+def _check_domain_invariants(sf, mask, zb, *,
+                             allow_waterlevel_zones: "frozenset[str]" = frozenset()) -> None:
     """Refuse to ship a domain carrying any of the four defects listed below.
 
     Both bugs were INFRASTRUCTURE, not physics — a region polygon and an elevation
@@ -201,6 +202,18 @@ def _check_domain_invariants(sf, mask, zb) -> None:
         fx, fy = sf.quadtree_grid.data.grid.face_coordinates.T
         sel = ((mask == 2) & (fx > xmin) & (fx < xmax)
                & (fy > ymin) & (fy < ymax))
+        if zone.name in allow_waterlevel_zones:
+            # A WAIVED INVARIANT MUST SHOUT. Silence here would recreate exactly the
+            # condition this alarm exists to catch, with no trace in the build log.
+            print("=" * 78)
+            print(f"!! INVARIANT WAIVED: no-waterlevel zone '{zone.name}'")
+            print(f"!! {int(sel.sum())} water-level BC cells are being ALLOWED inside it.")
+            print(f"!! {zone.why}")
+            print("!! This is only legitimate for a DELIBERATE bracketing experiment.")
+            print("!! The result is an INADMISSIBLE boundary condition and must never")
+            print("!! be reported as a candidate configuration.")
+            print("=" * 78)
+            continue
         if sel.any():
             fail.append(
                 f"{int(sel.sum())} water-level BC cells (mask=2) fall inside the "
@@ -232,12 +245,20 @@ def _check_domain_invariants(sf, mask, zb) -> None:
         raise RuntimeError(
             "[build_static] DOMAIN INVARIANTS FAILED:\n  - " + "\n  - ".join(fail)
         )
+    # Do NOT claim the zone invariant held when it was waived — a build log that says
+    # "OK" over a deliberately inadmissible domain is how a bracket gets mistaken for a
+    # candidate six weeks later.
+    zone_claim = ("no imposed ocean level in a declared no-waterlevel zone"
+                  if not allow_waterlevel_zones else
+                  f"⚠️ ZONE INVARIANT WAIVED for {sorted(allow_waterlevel_zones)} — "
+                  "THIS DOMAIN IS INADMISSIBLE BY CONSTRUCTION")
     print("[build_static] domain invariants OK (no outflow BC on water; no paved-over "
-          "surveyed channel; no interior inactive islands; no imposed ocean level in a "
-          "declared no-waterlevel zone)")
+          f"surveyed channel; no interior inactive islands; {zone_claim})")
 
 
-def apply_mask_and_boundary(base: BaseConfig, sf: SfincsModel) -> None:
+def apply_mask_and_boundary(base: BaseConfig, sf: SfincsModel, *,
+                            skip_overrides: "frozenset[str]" = frozenset(),
+                            allow_waterlevel_zones: "frozenset[str]" = frozenset()) -> None:
     """Build the active mask + water-level/outflow boundaries and enforce the invariants.
 
     Extracted verbatim from ``build_static`` (sections 4-5) so it has ONE source of
@@ -246,6 +267,15 @@ def apply_mask_and_boundary(base: BaseConfig, sf: SfincsModel) -> None:
     re-derive the mask at a different ``mask_zmin`` — a pure mask/boundary change that
     reuses the frozen subgrid tables (every face already has them), so no rebuild.
     Depends only on ``sf`` and ``base`` (``base.mask_zmin`` and ``base.region``).
+
+    ``skip_overrides`` / ``allow_waterlevel_zones`` (2026-08-03) — BRACKETING ONLY.
+    Both default to empty, so every existing caller is byte-identical. They exist for
+    ONE purpose: to build the deliberately-inadmissible bound described in
+    ``scripts/setup_manahawkin_open_template.py``, where hydromt's original water-level
+    boundary is left standing across the bay cross-section so the southern connection's
+    contribution can be bracketed. Skipping an override without also waiving the
+    matching zone will simply fail the invariant, which is the correct behaviour: the
+    two must be waived together and on purpose.
     """
     # 4. Active mask ----------------------------------------------------------
     # Boxes forced active at any depth, so dredged channels (-11..-27 m in
@@ -289,6 +319,9 @@ def apply_mask_and_boundary(base: BaseConfig, sf: SfincsModel) -> None:
     mask = sf.quadtree_grid.data["mask"].values.copy()
     fx, fy = sf.quadtree_grid.data.grid.face_coordinates.T
     for ov in _domain.active().mask_overrides:
+        if ov.name in skip_overrides:
+            print(f"!! mask override '{ov.name}' SKIPPED (bracketing experiment)")
+            continue
         xmin, ymin, xmax, ymax = ov.box
         sel = mask == ov.frm
         if xmin is not None:
@@ -333,7 +366,8 @@ def apply_mask_and_boundary(base: BaseConfig, sf: SfincsModel) -> None:
         mask[wet_outflow] = 1
     sf.quadtree_grid.data["mask"] = sf.quadtree_grid.data["mask"].copy(data=mask)
 
-    _check_domain_invariants(sf, mask, zb)
+    _check_domain_invariants(sf, mask, zb,
+                             allow_waterlevel_zones=allow_waterlevel_zones)
 
 
 def build_static(base: BaseConfig, template_dir: Path, skip_subgrid: bool = False) -> None:

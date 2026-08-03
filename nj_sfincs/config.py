@@ -270,6 +270,14 @@ class Experiment:
     description: str = ""
     waterlevel_geodataset: str | None = None
 
+    #: BRACKET ONLY (2026-08-03). Key into ``premier.BRACKETS``. A bracket is a
+    #: DELIBERATELY INADMISSIBLE domain built to BOUND a quantity — never a candidate
+    #: configuration. Setting this makes the runner refuse to stage it without
+    #: ``NJ_ALLOW_BRACKET``, excludes it from ``--experiments all``, and keeps its
+    #: metrics out of ``reports/metrics.csv``. See
+    #: ``scripts/setup_manahawkin_open_template.py``.
+    bracket: str | None = None
+
 
 # ── The experiment library the runner sweeps over ────────────────────────────
 # Reference points first, then the wave knobs turned on one (group) at a time.
@@ -455,6 +463,35 @@ EXPERIMENTS: dict[str, Experiment] = {
     # for the first time, and its sign may flip to LATE like the coast — in which case
     # tide-shift stops being a trade and becomes coherent everywhere. Folding both
     # changes into one run would destroy exactly that measurement, so the two run in
+    # ── THE SOUTHERN BRACKET (2026-08-03) — NOT A CANDIDATE CONFIGURATION ──────
+    # ⚠️ DELIBERATELY INADMISSIBLE. Leaves hydromt's water-level BC standing across the
+    # Manahawkin bay cross-section, imposing the open-ocean level on INTERIOR bay water.
+    # Same defect class as the inlet clamp that cost the 07-26..29 campaign.
+    #
+    # It exists to BOUND one number: the shipped domain walls off the southern lagoon at
+    # lat 39.70 (Little Egg + Beach Haven inlets are outside), which can only UNDER-supply
+    # the bay. This over-supplies it. The width between the two is the most the southern
+    # connection could possibly be worth — and it decides, for ~3 h of compute, whether a
+    # ~1.4 M-face southward mesh rebuild is justified.
+    #
+    # PRE-REGISTERED: it adds water at the SOUTH end, so Barnegat Light rises more than
+    # Mantoloking and the along-bay gradient goes FURTHER NEGATIVE. Hence, whatever the
+    # width, the southern wall cannot explain the tilt shortfall — a free result.
+    # DECISION RULE: <0.25 m at Mantoloking retires the extension; >0.6 m justifies it.
+    "BRACKET+wave-cora+bed-ehydro+mask-inlet+mask-manahawkin-open": Experiment(
+        "BRACKET+wave-cora+bed-ehydro+mask-inlet+mask-manahawkin-open",
+        WaveConfig(
+            use_waves=True, wave_wind=True, wave_igwaves=False, tune_physics=True,
+            wave_point_dataset=DATA / "waves" / "cora_waves_nj.nc",
+        ),
+        "INADMISSIBLE UPPER BOUND on the southern connection: the Manahawkin cut is "
+        "left as an imposed open-ocean water-level boundary instead of a closed wall. "
+        "Bounds what the walled-off Little Egg Inlet exchange could contribute. Never "
+        "report beside a candidate arm.",
+        waterlevel_geodataset=None,
+        bracket="manahawkin-open",
+    ),
+
     # parallel: `wave-cora+bed-ehydro+mask-inlet` is this arm's control.
     #
     # PRE-REGISTERED: coast keeps tide-shift's win (Sandy Hook ~0 min, Shrewsbury/Shark

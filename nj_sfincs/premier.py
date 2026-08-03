@@ -51,6 +51,7 @@ Audit any directory::
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -147,7 +148,104 @@ KNOWN = {V1_MONMOUTH: "v1_monmouth SEALED (leak fixed, Shark inlet carved)",
                       "inlet mask repaired 2026-07-30)",
          V2_BARNEGAT_PREMASK: "v2_barnegat PRE-REPAIR (open-ocean level imposed 2.6 km "
                               "INSIDE Barnegat Inlet — the 2026-07-26..29 campaign)",
-         LEGACY: "LEGACY pre-rebuild (Navesink LEAKING, Shark inlet DAMMED)"}
+         LEGACY: "LEGACY pre-rebuild (Navesink LEAKING, Shark inlet DAMMED)",
+         DomainFingerprint(1143357, 2164, "67378a9f00b13410"):
+             "INADMISSIBLE BRACKET 'manahawkin-open' (upper bound) — ocean level "
+             "imposed across the Manahawkin bay cross-section ON PURPOSE"}
+
+
+# ── BRACKETS: deliberately INADMISSIBLE bounds (2026-08-03) ───────────────────
+# A bracket is a domain built to be WRONG in a known direction, so that the true answer
+# can be bounded between two runs. The Manahawkin bracket leaves hydromt's water-level
+# boundary standing across the bay cross-section, over-forcing the lagoon from its
+# southern end, to bound what the walled-off Little Egg Inlet exchange could be worth.
+#
+# ⚠️ WHY THESE LIVE IN THEIR OWN REGISTRY AND NOT IN `EXPECTED`.
+# Putting a bracket fingerprint in `EXPECTED` would make `assert_sealed_domain` PASS on
+# it under some NJ_DOMAIN. That is precisely the property we must not have. This project
+# has already lost a four-day campaign to an inadmissible boundary condition that scored
+# well (the inlet clamp) — the lesson was that labelling is not enough, the guard has to
+# refuse. So a bracket is recognised, named loudly, and REJECTED by the sealed-domain
+# check; it is scored only through its own script into its own CSV.
+
+
+@dataclass(frozen=True)
+class Bracket:
+    """A deliberately inadmissible domain used to BOUND a quantity, never to model it."""
+
+    name: str
+    base_domain: str
+    fingerprint: DomainFingerprint
+    bound: str            # "upper" | "lower" — which way it is wrong, stated up front
+    inadmissible_why: str
+    bounds_what: str
+
+
+MANAHAWKIN_OPEN = Bracket(
+    name="manahawkin-open",
+    base_domain="v2_barnegat",
+    # Built 2026-08-03 by scripts/setup_manahawkin_open_template.py. Same mesh as
+    # V2_BARNEGAT; the only difference is 55 cells swapped active -> water-level BC
+    # across the Manahawkin bay cross-section (active 814,938 -> 814,883,
+    # waterlevel 2,911 -> 2,966). z, subgrid and the wave boundary are byte-identical.
+    fingerprint=DomainFingerprint(1143357, 2164, "67378a9f00b13410"),
+    bound="upper",
+    inadmissible_why=(
+        "hydromt's water-level BC is left standing across the Manahawkin bay "
+        "cross-section, imposing the open-ocean level on INTERIOR bay water and driving "
+        "Barnegat Bay from its southern end in parallel with the inlet exchange the "
+        "domain exists to measure. Same defect class as the inlet clamp."
+    ),
+    bounds_what=(
+        "the maximum possible contribution of the southern connection (Little Egg / "
+        "Beach Haven inlets) that the 39.70 wall omits. The walled run is the lower "
+        "bound; this is the upper. If the two agree, the southward domain extension is "
+        "retired without building it."
+    ),
+)
+
+BRACKETS: "dict[str, Bracket]" = {MANAHAWKIN_OPEN.name: MANAHAWKIN_OPEN}
+
+#: A run directory whose name starts with this is a bracket. Machine-checkable, and
+#: deliberately redundant with the `Experiment.bracket` field — belt and braces, because
+#: the whole point is that this cannot be forgotten.
+BRACKET_PREFIX = "BRACKET+"
+
+
+def bracket_of(model_dir: "Path | str") -> "Bracket | None":
+    """The Bracket this directory is, or None. Matches on the domain fingerprint."""
+    try:
+        fp = domain_fingerprint(model_dir)
+    except (FileNotFoundError, OSError):
+        return None
+    for b in BRACKETS.values():
+        if b.fingerprint.sha_z_mask != "PENDING" and fp == b.fingerprint:
+            return b
+    return None
+
+
+def assert_bracket(model_dir: "Path | str", name: str, context: str = "") -> None:
+    """Assert this directory IS the named bracket, and that the caller meant it.
+
+    Requires ``NJ_ALLOW_BRACKET=<name>`` in the environment. That is cheap and it means
+    an accidental invocation — a sweep, a copied command line — cannot stage or score a
+    bracket by mistake.
+    """
+    b = BRACKETS.get(name)
+    if b is None:
+        raise KeyError(f"unknown bracket {name!r}; known: {sorted(BRACKETS)}")
+    if os.environ.get("NJ_ALLOW_BRACKET") != name:
+        raise RuntimeError(
+            f"{context}: refusing to touch bracket {name!r} without "
+            f"NJ_ALLOW_BRACKET={name}. A bracket is a deliberately INADMISSIBLE bound, "
+            f"not a candidate configuration.\n  {b.inadmissible_why}"
+        )
+    got = domain_fingerprint(model_dir)
+    if b.fingerprint.sha_z_mask != "PENDING" and got != b.fingerprint:
+        raise WrongDomainError(
+            f"{context}: {model_dir} is not bracket {name!r}.\n"
+            f"    expected {b.fingerprint}\n    got      {got}"
+        )
 
 
 def expected() -> DomainFingerprint:
@@ -220,6 +318,23 @@ def assert_sealed_domain(model_dir: Path | str, context: str = "") -> None:
     want = expected()
     dom = _domain.active().name
     got = domain_fingerprint(model_dir)
+
+    # A BRACKET MUST BE REFUSED BY NAME, not merely fail as "some wrong domain".
+    # The generic message would send the reader looking for a staging mistake; this one
+    # says what the directory actually is and why it can never be a candidate.
+    brk = next((b for b in BRACKETS.values()
+                if b.fingerprint.sha_z_mask != "PENDING" and got == b.fingerprint), None)
+    if brk is not None:
+        raise WrongDomainError(
+            f"{where}{model_dir} is the INADMISSIBLE BRACKET '{brk.name}' "
+            f"({brk.bound} bound), not a sealed domain.\n"
+            f"    {brk.inadmissible_why}\n"
+            f"    it bounds: {brk.bounds_what}\n"
+            f"  Score it with scripts/score_bracket.py and NJ_ALLOW_BRACKET={brk.name}.\n"
+            "  It must never enter reports/metrics.csv or sit in a table beside a "
+            "candidate arm."
+        )
+
     if got != want:
         raise WrongDomainError(
             f"{where}{model_dir} is NOT on domain '{dom}'.\n"

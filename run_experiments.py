@@ -127,7 +127,18 @@ def prepare_experiment(name: str, base: BaseConfig) -> Path:
         shutil.rmtree(exp_dir)
     shutil.copytree(TEMPLATE, exp_dir)
     # Fail here, before the solver burns an hour on the wrong planet.
-    premier.assert_sealed_domain(exp_dir, context=f"staging '{name}' from {TEMPLATE.name}")
+    # A BRACKET takes the opposite check: it is SUPPOSED to be an inadmissible domain,
+    # so assert_sealed_domain would (correctly) refuse it. assert_bracket confirms it is
+    # the bracket it claims to be AND that the caller passed NJ_ALLOW_BRACKET.
+    if exp.bracket:
+        premier.assert_bracket(exp_dir, exp.bracket,
+                               context=f"staging bracket '{name}'")
+        print(f"[{name}] *** INADMISSIBLE BRACKET '{exp.bracket}' "
+              f"({premier.BRACKETS[exp.bracket].bound} bound) — bounds a quantity, "
+              "is not a candidate configuration")
+    else:
+        premier.assert_sealed_domain(
+            exp_dir, context=f"staging '{name}' from {TEMPLATE.name}")
 
     sf = SfincsModel(str(exp_dir), data_libs=base.data_libs, mode="r+")
     sf.read()
@@ -176,6 +187,13 @@ def collect_metrics(names: list[str]) -> pd.DataFrame:
         # Stamp the domain onto every row. A metrics table whose numbers do not say which
         # domain they came from is how the phase-lag A/B got compared against a premier it
         # never shared a mesh with. Scoring legacy runs stays legal — silently is not.
+        exp = EXPERIMENTS.get(name)
+        if exp is not None and exp.bracket:
+            # Stamp it so the row can never be read as a candidate, even out of context.
+            rows[name]["domain"] = f"BRACKET:{exp.bracket} INADMISSIBLE"
+            print(f"[{name}] bracket row — writes to the bracket report, "
+                  "never to metrics.csv")
+            continue
         sealed = premier.is_sealed(exp_dir)
         dom = domain.active().name
         rows[name]["domain"] = dom if sealed else f"NOT-{dom}"
@@ -214,8 +232,17 @@ def main(argv=None) -> int:
                         "test; forces a template rebuild")
     args = p.parse_args(argv)
 
-    names = list(EXPERIMENTS) if args.experiments == "all" \
-        else [n.strip() for n in args.experiments.split(",")]
+    # 'all' must NEVER pick up a bracket. A bracket is a deliberately inadmissible
+    # bound; sweeping it would put a known-wrong domain into a candidate table, which is
+    # exactly the failure the inlet clamp taught us to design against. Naming it
+    # explicitly (plus NJ_ALLOW_BRACKET) is the only way to run one.
+    if args.experiments == "all":
+        names = [n for n, e in EXPERIMENTS.items() if e.bracket is None]
+        skipped = [n for n, e in EXPERIMENTS.items() if e.bracket is not None]
+        if skipped:
+            print(f"[sweep] excluding {len(skipped)} bracket(s) from 'all': {skipped}")
+    else:
+        names = [n.strip() for n in args.experiments.split(",")]
     unknown = [n for n in names if n not in EXPERIMENTS]
     if unknown:
         p.error(f"unknown experiment(s): {unknown}. Choices: {list(EXPERIMENTS)}")
