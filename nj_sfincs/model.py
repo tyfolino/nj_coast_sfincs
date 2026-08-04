@@ -58,6 +58,12 @@ OUTFLOW_MAX_DEPTH = -1.0
 PAVED_BED_LAND = -0.5
 PAVED_SURVEY_WATER = -2.0
 
+# Latitude band width for the water-level boundary profile. 0.05 deg (~5.6 km) puts
+# the v2 domain on ~17 rows — short enough to read at a glance, fine enough that the
+# 2.6 km Barnegat Inlet intrusion lands in its own band instead of being averaged
+# into 40 km of open coast.
+BC_REPORT_BAND_DEG = 0.05
+
 
 def _open_coast_max_y() -> float:
     """Northing above which the coast is no longer open Atlantic.
@@ -136,6 +142,133 @@ def _fill_inactive_holes(sf, mask, zb) -> np.ndarray:
           f"y {fy[hole].min():.0f}-{fy[hole].max():.0f}) — an inactive island inside "
           f"the model blocks conveyance AND spawns a water-level BC around itself")
     return mask
+
+
+def _report_waterlevel_boundary(sf, mask, zb) -> None:
+    """Print the ENTIRE water-level boundary, as connected runs, on every build.
+
+    ── WHY THIS IS A REPORT AND NOT AN ASSERT ───────────────────────────────
+    Three times now the water-level BC has landed somewhere it had no business
+    being: the Navesink cut face, the Manahawkin cross-section, and 2.6 km inside
+    the Barnegat Inlet throat. Each was found months later by chasing a bad number
+    downstream. The obvious response is a fourth invariant that catches the CLASS.
+    It was attempted and it does not work — recorded here so it is not re-attempted:
+
+      predicate                       why it fails
+      -----------------------------   -----------------------------------------
+      y < open_coast_max_y            a LATITUDE cut. Catches the northern corner
+                                      only; the Barnegat gorge sits at y~4,401k,
+                                      far below the line, and passes clean.
+      seaward of the barrier axis     an inlet IS the gap in the barrier, so the
+      (_BARRIER / _S_BARRIER)         gorge cells straddle the axis by definition.
+                                      Ambiguous exactly where it must discriminate.
+      near the region edge            no — the legitimate BC line is the -10 m
+                                      isobath, which lies well INSIDE the region.
+      detached connected component    no — see _fill_inactive_holes: a scoured
+                                      gorge intrusion stays CONNECTED to the sea.
+      cell count vs a baseline        detects CHANGE, not WRONGNESS. The gorge was
+                                      present in every v2 run through 07-29 and the
+                                      mesh fingerprint was stable throughout.
+                                      Stable-and-wrong is invisible to a baseline.
+
+    "Inside an inlet" is precisely where geometry stops discriminating, so there is
+    no predicate here to assert. What all three defects DID share is that nobody
+    ever looked at the BC set as a whole. So: display it, every build, and let a
+    person read it. Visibility, not validation.
+
+    ── HOW TO READ THE OUTPUT ───────────────────────────────────────────────
+    One row per band of latitude, north to south. **The W-edge column is the whole
+    point.** The legitimate boundary is the -10 m isobath running alongshore, so on
+    the open coast the west edge barely moves from band to band. An intrusion —
+    an inlet throat, a dredged channel, a bay deeper than ``mask_zmin`` — shows up
+    as a band whose west edge jumps INLAND of its neighbours, because the isobath
+    has reached landward through a gap. Read the jump, not the cell count: 193 cells
+    is small beside a 2,000-cell arc and still invalidated a whole campaign.
+
+    ── PROVEN AGAINST THE ONE DEFECT WE ALREADY KNOW ────────────────────────
+    Run over the pre- and post-repair templates, band 39.75-39.80 (Barnegat Inlet):
+
+        _template_sealed           368 cells   W edge -74.1132   dW -2.52 km
+        _template_ehydro_inletmask 223 cells   W edge -74.0859   dW -0.19 km
+
+    The 145-cell difference is exactly the intrusion `_NO_WL_BARNEGAT_INLET` was
+    written to forbid. It was legible from the build log the whole time; nobody was
+    printing it. That is the entire justification for this function.
+
+    ── THINGS THAT LOOK LIKE DEFECTS AND ARE NOT ────────────────────────────
+    * Band 40.40-40.45 shows dW of about +27 km, an EASTWARD step. That is Sandy
+      Hook: north of the spit the domain contains Raritan Bay (W edge ~-74.28),
+      south of it the coast sits at ~-73.96. Geometry, not a boundary defect.
+    * Bands 40.45-40.55 carry z to -23 m. Those are the Raritan / Sandy Hook
+      dredged channels, forced active by ``always_active_boxes_ll`` on purpose.
+    * The 40.50-40.55 band is the 40.52 north cut — a declared lateral terminus.
+      See domain.py for what its imposed level can and cannot represent.
+
+    ⚠️ dW is a FIRST DIFFERENCE against the band to the north, so an intruded band
+    distorts its neighbour's number too: the southern edge reads -1.73 km on the
+    sealed template and -4.06 km on the repaired one, purely because the band above
+    it changed. Treat a jump as "look here", not as a measurement, and expect one
+    intrusion to perturb two rows.
+
+    A band can also be legitimate and still not be open coast — the 40.52 north cut
+    is a real lateral terminus. Those are named in domain.py; anything NOT named
+    there that shows a west-edge jump is a new intrusion.
+
+    ⚠️ Do not "improve" this by grouping cells with ``connected_components`` on the
+    mesh ``face_face_connectivity`` — tried, and it fragments the boundary into
+    hundreds of single-cell groups. The BC line is one cell wide and ragged, so
+    consecutive cells frequently touch only at a CORNER and are not edge-adjacent.
+
+    ── WHAT TO DO WHEN A NEW RUN APPEARS ────────────────────────────────────
+    1. Part of the alongshore arc, z near ``mask_zmin``?  Fine, nothing to do.
+    2. A compact blob inland of the coast?  It is an intrusion. Then:
+       a. rimming an inactive island -> ``_fill_inactive_holes`` should have taken
+          it; find out why it did not (it runs BEFORE create_boundary, and cannot
+          reach anything still connected to the sea).
+       b. reached through a constriction that stays sea-connected (a scoured inlet,
+          a dredged channel) -> force it active with ``always_active_boxes_ll`` AND
+          declare a ``NoWaterLevelBox`` so it cannot return silently. Both, not
+          either: a box alone is a repair with no invariant behind it, which is the
+          same structural gap that produced the inlet clamp.
+       c. sitting on the REGION EDGE -> it is a lateral terminus, not a bug; the
+          domain has to close somewhere. Leave it, and write down what level it
+          carries and what that level cannot represent. See the 40.52 north cut
+          in domain.py for the worked example.
+    3. In every case the level imposed on those cells is the Battery->AC
+       interpolant. Ask whether that interpolant is admissible THERE, not merely
+       whether a boundary belongs there at all.
+    """
+    import pyproj
+
+    bc = mask == 2
+    n = int(bc.sum())
+    if not n:
+        print("[bc] no water-level boundary cells")
+        return
+
+    fx, fy = sf.quadtree_grid.data.grid.face_coordinates.T
+    tf = pyproj.Transformer.from_crs(sf.crs, 4326, always_xy=True)
+    lon, lat = tf.transform(fx[bc], fy[bc])
+    z = zb[bc]
+
+    band = np.floor(lat / BC_REPORT_BAND_DEG).astype(int)
+    print(f"[bc] {n} water-level boundary cells, alongshore profile "
+          f"({BC_REPORT_BAND_DEG:g} deg bands, north to south). READ THE W-EDGE COLUMN: "
+          f"a band whose west edge jumps inland of its neighbours is an intrusion "
+          f"(see _report_waterlevel_boundary).")
+    print(f"     {'lat band':<14} {'cells':>6}  {'W edge':>9} {'E edge':>9}  "
+          f"{'dW km':>7}  {'z range':>15}")
+    prev_w = None
+    for b in sorted(set(band.tolist()), reverse=True):
+        s = band == b
+        w, e = float(lon[s].min()), float(lon[s].max())
+        # Metres of westward excursion vs the band to the north. On the open coast
+        # this stays small; at an intrusion it is the width of the reach inland.
+        dw = "" if prev_w is None else f"{(w - prev_w) * 111_320 * np.cos(np.radians(lat[s].mean())) / 1e3:+7.2f}"
+        prev_w = w
+        print(f"     {b * BC_REPORT_BAND_DEG:6.2f}-{(b + 1) * BC_REPORT_BAND_DEG:6.2f} "
+              f"{int(s.sum()):6d}  {w:9.4f} {e:9.4f}  {dw:>7}  "
+              f"{z[s].min():+7.2f}..{z[s].max():+6.2f}")
 
 
 def _check_domain_invariants(sf, mask, zb, *,
@@ -366,6 +499,9 @@ def apply_mask_and_boundary(base: BaseConfig, sf: SfincsModel, *,
         mask[wet_outflow] = 1
     sf.quadtree_grid.data["mask"] = sf.quadtree_grid.data["mask"].copy(data=mask)
 
+    # Display the whole BC set BEFORE the invariants run, so it is on the log even
+    # when the build then fails — the intrusion is usually what caused the failure.
+    _report_waterlevel_boundary(sf, mask, zb)
     _check_domain_invariants(sf, mask, zb,
                              allow_waterlevel_zones=allow_waterlevel_zones)
 

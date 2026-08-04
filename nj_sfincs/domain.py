@@ -497,6 +497,52 @@ V1_MONMOUTH = Domain(
     n_waterlevel_support=2,
 )
 
+# ── THE 40.52 NORTH CUT — a KNOWN, ACCEPTED structural limit ─────────────────
+# The worked example referenced by `model._report_waterlevel_boundary`: a run of
+# water-level BC cells that is NOT a bug, so that a future reader who sees it on
+# the build log does not "fix" it.
+#
+# region_v2_barnegat.geojson is a RECTANGLE (lon -74.30..-73.45, lat 39.70..40.52).
+# Its northern edge is therefore a straight latitude line at 40.52 which crosses
+# Raritan / Lower Bay, and `always_active_boxes_ll` forces the dredged channels
+# active right up to it — so `create_boundary` lays mask==2 along that cut.
+#
+# Two different rules are producing one boundary. Everywhere else the BC line is
+# derived from BATHYMETRY (the -10 m isobath); here it is derived from the SHAPE OF
+# THE REGION RECTANGLE. The same Battery->AC interpolant is imposed on both.
+#
+# ⚠️ WHAT IS WRONG WITH IT, stated so it is not rediscovered as a surprise:
+#   Raritan / Sandy Hook Bay AMPLIFIES — 1.12-1.15x vs the Battery on NOAA datums.
+#   The imposed level is a LINEAR INTERPOLATION between the Battery and Atlantic
+#   City, both of which sit OUTSIDE that amplification, and linear interpolation
+#   between two outside points cannot produce an interior maximum. So this lobe is
+#   ~15% under-forced BY CONSTRUCTION, not by calibration error.
+#
+# ✅ WHY IT IS LEFT ALONE ANYWAY:
+#   - A wall is wrong. Unlike `_NO_WL_MANAHAWKIN`, the omitted exchange here is not
+#     bounded and local: the Narrows / Arthur Kill carry the Upper Bay + Hudson
+#     tidal prism, drawn through Raritan Bay. The domain must stay open at 40.52.
+#   - A Sandy Hook node is the move that LOST TWICE. `phaselag_composite` gave it
+#     the Battery's NTR unscaled (HWM bias +0.32 -> +0.73 m, within-0.5 m 74% ->
+#     21%); `phaselag_composite_v2` interpolated the NTR instead and still sat off
+#     the surge line away from the peak (+0.049 m at Shark River). `tide-shift` won
+#     by inserting NO node. Both composites are RETIRED — do not build a v3.
+#   - It cannot be calibrated honestly: the Sandy Hook gauge died before the crest
+#     (8531680 is 48/96 hours NaN in gtsm/noaa_sandy_validation.nc, the whole back
+#     half 10-30T00:00..10-31T23:00), so there is no independent constraint on what
+#     the level there should be. Reconstructions do not rescue this — GTSM's tide is
+#     ~34% low, CORA runs 0.14-0.31 m low and late, and any ML surge reconstruction
+#     compresses the tail exactly at an outlier crest. You cannot validate the fill
+#     because the data you would validate against IS the gap.
+#
+# ⚠️ SCOPE. `phaselag_composite_v2`'s retirement argues that linear interpolation is
+# not a meaningful error source — but that test (CORA vs a CORA-built interpolant at
+# the same two points, so its own bias cancels) was run ON THE OPEN COAST. It does
+# not extend to a semi-enclosed amplifying basin. The ~15% above stands.
+#
+# Blast radius: the `sandy_hook_bay` and `shrewsbury_navesink` HWM basins. This is
+# ~50 km north of Mantoloking, behind a barrier — it is NOT the Barnegat Bay volume
+# deficit, and should not be conflated with it.
 V2_BARNEGAT = Domain(
     name="v2_barnegat",
     region=DATA / "region_v2_barnegat.geojson",
