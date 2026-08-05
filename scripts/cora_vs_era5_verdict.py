@@ -34,7 +34,7 @@ GAMMA = 0.78  # classic depth-limited breaking index Hs/h
 def imposed():
     rows = []
     for arm in (CONTROL, PERTURB):
-        d = ROOT / "experiments" / arm
+        d = exp_root() / arm
         bnd = np.atleast_2d(np.loadtxt(d / "snapwave.bnd"))
         hs = np.loadtxt(d / "snapwave.bhs")
         k = int(np.argmax(hs[:, 1:].max(axis=1)))
@@ -57,7 +57,7 @@ def admissibility():
 
     out = []
     for arm in (CONTROL, PERTURB):
-        d = ROOT / "experiments" / arm
+        d = exp_root() / arm
         bnd = np.atleast_2d(np.loadtxt(d / "snapwave.bnd"))
         hs = np.loadtxt(d / "snapwave.bhs")
         k = int(np.argmax(hs[:, 1:].max(axis=1)))
@@ -127,7 +127,7 @@ def rescore():
     head = hwm["quality"].astype(float).values <= 2
     rows = []
     for arm in (CONTROL, PERTURB):
-        rd = ROOT / "experiments" / arm
+        rd = exp_root() / arm
         h = rioxarray.open_rasterio(rd / "floodmap_hmax_lev3.tif",
                                     masked=True).squeeze(drop=True)
         d = rioxarray.open_rasterio(rd / "subgrid" / "dep_subgrid_lev3.tif",

@@ -66,9 +66,9 @@ from hydromt_sfincs import SfincsModel
 import nj_sfincs  # noqa: F401  (PROJ primer — must precede hydromt_sfincs)
 from nj_sfincs import domain as _domain
 from nj_sfincs import model, premier
-from nj_sfincs.config import EXPERIMENTS, ROOT, BaseConfig
+from nj_sfincs.config import exp_root, EXPERIMENTS, ROOT, BaseConfig
 
-EXP = ROOT / "experiments"
+EXP = exp_root()
 SOURCE = EXP / "_template_ehydro_south"
 TEMPLATE = EXP / "_template_ehydro_inletmask"
 

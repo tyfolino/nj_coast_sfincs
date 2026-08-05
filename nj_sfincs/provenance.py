@@ -13,8 +13,9 @@ Use in a notebook:
     provenance.manifest(exp_dir)                 # DataFrame, displays as a table
     print(provenance.summary(exp_dir))           # plain text, for a report
 
-Catalog URIs are resolved through `data/data_catalog.yml` — ⚠️ note there are TWO
-data_catalog.yml in this tree and only `data/data_catalog.yml` is live.
+Catalog URIs are resolved through `data/data_catalog.yml`, of which there is exactly one.
+(This note used to warn about a second copy; the two-catalog situation was an artefact of
+the v1/v2 repo split and ended with the 2026-08-05 consolidation.)
 """
 
 from __future__ import annotations

@@ -232,8 +232,10 @@ gmrt_nj:
 
 cudem_nj:
   # ⚠️ CHANGED for domain v2: this now points at the TILE VRT, not a materialised
-  # clip. nj_sandy_sfincs carried `cudem_nj_clip.tif` (714 MB) cut to the v1
-  # footprint; re-cutting it for v2 would have produced a ~2 GB duplicate of
+  # clip. The v1 repo carried `cudem_nj_clip.tif` (714 MB) cut to the v1
+  # footprint (deleted in the 2026-08-05 consolidation — the VRT supersedes it and
+  # scripts/download_cudem.py rebuilds it if ever needed);
+  # re-cutting it for v2 would have produced a ~2 GB duplicate of
   # bytes already on disk under the shared data root. The VRT is read lazily and
   # windowed by the region polygon, so the values reaching the merge are
   # identical — gdal_translate -projwin never resampled anything, it only
@@ -306,12 +308,12 @@ noaa_sandy_nj:
     source: NOAA CO-OPS hourly_height (8518750, 8531680, 8534720, 8536110), Oct 28-31 2012
     url: https://api.tidesandcurrents.noaa.gov/api/prod/datagetter
 
-# ── RETIRED FORCINGS ARE NOT CARRIED INTO THIS REPO ──────────────────────────
-# nj_sandy_sfincs also defined noaa_sandy_nj_shblend, noaa_sandy_composite,
-# noaa_sandy_composite_v2, gtsm_sandy, gtsm_sandy_tide and fes_sandy_tide. All
-# are retired, and their .nc files are deliberately absent here, so the entries
-# are gone too: a catalog key pointing at a file that does not exist is a trap,
-# not a record.
+# ── RETIRED FORCINGS HAVE NO CATALOG ENTRY ───────────────────────────────────
+# noaa_sandy_nj_shblend, noaa_sandy_composite, noaa_sandy_composite_v2,
+# gtsm_sandy, gtsm_sandy_tide and fes_sandy_tide are all retired. Their .nc files
+# are kept for the record under `data/gtsm/retired_v1_monmouth/`, but they get NO
+# catalog key: a live key is an invitation to force a run with them, and the
+# point is that none of them should be used again.
 #
 #   * Both composites - superseded by noaa_sandy_phaseshift, which beats them on
 #     phase AND level simultaneously (Sandy Hook lag -0.1 vs 6.7 min; HWM bias
@@ -324,8 +326,9 @@ noaa_sandy_nj:
 #   * fes_sandy_tide / shblend - phase-reference and blend experiments, both
 #     superseded by the same phaseshift route.
 #
-# Those arms remain reproducible in nj_sandy_sfincs, preserved as the record for
-# the sealed premier campaign.
+# Those arms remain reproducible from `data/gtsm/retired_v1_monmouth/`, preserved
+# as the record for the sealed premier campaign. See docs/naming.md for the
+# retired-arm table and docs/campaigns/ for what each one was testing.
 
 # ── Phase-shifted boundary (2026-07-25) — SUPERSEDES both composites above. ──
 # The composites fixed the phase by INSERTING Sandy Hook as a 3rd support point. v2's claim

@@ -30,7 +30,7 @@ import pandas as pd
 
 import nj_sfincs  # noqa: F401  (PROJ primer)
 from nj_sfincs import premier, validate
-from nj_sfincs.config import ROOT
+from nj_sfincs.config import exp_root, ROOT
 
 #: Each arm is listed next to the control it is a single-variable delta against.
 #: `tide-shift` moves the tidal boundary phase off `faber-waves-premier`; the two `bed-`
@@ -39,7 +39,7 @@ ARMS = ["faber-waves-premier", "wave-cora",
         "tide-shift",                        # vs faber-waves-premier
         "wave-cora+bed-baymanning",          # vs wave-cora
         "wave-cora+bed-ehydro"]              # vs wave-cora
-V1_HWM = Path("/cache/home/tpj8/nj_sandy_sfincs/data/validation/sandy_hwms.geojson")
+V1_HWM = ROOT / "data" / "validation" / "v1_monmouth" / "sandy_hwms.geojson"
 OUT = ROOT / "reports"
 
 #: CSI is an EXTENT metric and does not depend on the HWM estimator, so the frozen v1
@@ -83,7 +83,7 @@ def main(estimator: str = validate.HWM_ESTIMATOR_DEFAULT) -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     rows_native, rows_bridge = {}, {}
     for name in ARMS:
-        d = ROOT / "experiments" / name
+        d = exp_root() / name
         if not (d / "sfincs_map.nc").exists():
             print(f"[{name}] no sfincs_map.nc yet — skipping")
             continue

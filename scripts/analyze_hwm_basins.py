@@ -20,7 +20,7 @@ from __future__ import annotations
 import pandas as pd
 
 import nj_sfincs  # noqa: F401  (pyproj primer — must precede hydromt_sfincs)
-from nj_sfincs.config import ROOT
+from nj_sfincs.config import exp_root, ROOT
 from nj_sfincs.validate import (
     HWM_BASINS,
     hwm_metrics,
@@ -43,7 +43,7 @@ OBS_CREST = 2.935  # USGS 01407600 Shrewsbury, m NAVD88
 
 rows = []
 for run, desc in RUNS.items():
-    d = ROOT / "experiments" / run
+    d = exp_root() / run
     if not (d / "sfincs_map.nc").exists():
         print(f"[{run}] no map yet — skipping", flush=True)
         continue

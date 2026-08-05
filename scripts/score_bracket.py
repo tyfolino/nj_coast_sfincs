@@ -38,7 +38,7 @@ import pandas as pd
 
 import nj_sfincs  # noqa: F401  (PROJ primer)
 from nj_sfincs import premier, validate
-from nj_sfincs.config import ROOT, DATA
+from nj_sfincs.config import exp_root, ROOT, DATA
 
 BRACKET = "manahawkin-open"
 
@@ -99,8 +99,8 @@ def bracket_width(gauge: str) -> dict:
     Both series come from ``interior_gauge_series(source="map")``, i.e. the median over
     wet channel cells, on the model clock, restricted to ``validate.BAY_WINDOW``.
     """
-    lo = validate.interior_gauge_series(ROOT / "experiments" / WALLED, gauge)
-    hi = validate.interior_gauge_series(ROOT / "experiments" / OPEN, gauge)
+    lo = validate.interior_gauge_series(exp_root() / WALLED, gauge)
+    hi = validate.interior_gauge_series(exp_root() / OPEN, gauge)
     if lo.empty or hi.empty:
         return {}
 
@@ -150,8 +150,8 @@ def verdict(width_m: float) -> str:
 
 
 def main() -> int:
-    walled_dir = ROOT / "experiments" / WALLED
-    open_dir = ROOT / "experiments" / OPEN
+    walled_dir = exp_root() / WALLED
+    open_dir = exp_root() / OPEN
 
     # ── guards ────────────────────────────────────────────────────────────────
     # The control must be a genuine candidate; the bracket must be the named bracket

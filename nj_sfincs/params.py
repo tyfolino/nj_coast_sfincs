@@ -24,14 +24,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import domain as _domain
 from .config import BaseConfig
 from .model import (
-    BAY_INCLUDE_BOX_LL,
     OUTFLOW_MAX_DEPTH,
     PAVED_BED_LAND,
     PAVED_SURVEY_WATER,
-    SANDY_HOOK_TIP_Y,
 )
+
+# `BAY_INCLUDE_BOX_LL` and `SANDY_HOOK_TIP_Y` used to be literals in model.py. They are
+# per-domain facts, so they moved into the domain registry (as `always_active_boxes_ll`
+# and `open_coast_max_y`) — this module was not updated at the time and importing it
+# raised ImportError until 2026-08-05. Read them per-domain at render time; a parameter
+# inventory that hardcoded one domain's value would be wrong on the other anyway.
 
 # ── What each sfincs.inp key means, and which table it belongs in ─────────────
 # (group, description). Order within a group follows this dict.
@@ -198,10 +203,10 @@ def tables(sf, base: BaseConfig | None = None) -> str:
         ("`OUTFLOW_MAX_DEPTH`", f"**{OUTFLOW_MAX_DEPTH} m**",
          "🩸 THE LEAK. A free-outflow BC on water deeper than this is a DRAIN. "
          "It cost 92.6% of the estuary's inflow; now a build-time invariant"),
-        ("`BAY_INCLUDE_BOX_LL`", f"`{BAY_INCLUDE_BOX_LL}`",
+        ("`always_active_boxes_ll`", f"`{_domain.active().always_active_boxes_ll}`",
          "Force Raritan/Sandy Hook Bay active at any depth, so dredged channels "
          "(−11..−27 m) don't punch inactive holes"),
-        ("`SANDY_HOOK_TIP_Y`", f"**{SANDY_HOOK_TIP_Y:,} m N**",
+        ("`open_coast_max_y`", f"**{_domain.active().open_coast_max_y:,} m N**",
          "Northing cut for SnapWave support points"),
         ("`PAVED_BED_LAND` / `PAVED_SURVEY_WATER`", f"**{PAVED_BED_LAND} / {PAVED_SURVEY_WATER} m**",
          "🩸 THE DAM. Model calls it land, survey says water this deep ⇒ lidar paved "

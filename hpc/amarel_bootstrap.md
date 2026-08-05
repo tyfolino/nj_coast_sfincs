@@ -74,20 +74,15 @@ export PATH=/scratch/$USER/.npm-global/bin:$PATH   # add to ~/.bashrc
 npm install -g @anthropic-ai/claude-code
 ```
 
-### 4. Restore the project memory (so cluster-side Claude has full context)
-The memory files in `hpc/claude_memory/` are a snapshot of this project's Claude
-memory (goals, the whole SnapWave/wavemaker/validation history, the roadmap). Claude
-keys memory by the working-dir path, so after the first `claude` launch in the repo:
-```bash
-cd /scratch/$USER/nj_sandy_sfincs            # wherever you cloned it
-claude    # launch once so it creates ~/.claude/projects/<this-path>/memory/, then exit
-# find the dir it made (path = cwd with / -> -):
-MEMDIR=$(ls -d ~/.claude/projects/*nj-sandy-sfincs*/memory 2>/dev/null | head -1)
-mkdir -p "$MEMDIR" && cp hpc/claude_memory/*.md "$MEMDIR"/
-echo "restored memory into $MEMDIR"
-```
-Then cluster-side Claude starts with the same context this session has — including the
-[[project-wavemaker-run]] verdict and [[project-validation-roadmap]].
+### 4. Project context for cluster-side Claude
+Nothing to restore. The durable project knowledge lives IN the repo — `CLAUDE.md` at the
+root (read automatically) and `docs/campaigns/` for the campaign histories — so a fresh
+clone carries its own context and cannot go stale against a snapshot.
+
+This replaces the old `hpc/claude_memory/` mirror (deleted 2026-08-05). That mirror was a
+copy of `~/.claude`'s memory store synced by hand; it drifted 30 files behind the live
+store and was still advertising June conclusions that July had overturned. A snapshot of
+mutable memory in a git tree is a staleness generator — the repo docs are the source now.
 
 ### 5. Authenticate (the one fiddly headless step)
 Run `claude` in the repo dir; it starts the login flow. On a headless login node:
@@ -121,11 +116,22 @@ Once `claude` launches and authenticates on Amarel, **Phase 2 starts there.**
 ## Phase 1 — what actually worked on Amarel (2026-06-15)
 
 Env manager is **micromamba** (no conda module on Amarel), installed into
-`$PROJ/micromamba`. `$PROJ = /home/tpj8/nj_sandy_sfincs` (HOME is on the large
-`/cache` filesystem, 87 T free — no need for `/scratch`).
+`$PROJ/micromamba`. HOME is on the large `/cache` filesystem (84 T free — no need for
+`/scratch`).
+
+> ⚠️ **`$PROJ` is the TOOLCHAIN directory, not the repo.** Since the 2026-08-05
+> consolidation the project is `~/nj_coast_sfincs`, while `~/nj_sandy_sfincs` was demoted
+> to holding only `micromamba/`, `hydromt_sfincs/` and the `.sif` images. They are
+> deliberately separate: a conda env bakes its own absolute prefix into 79 shebangs and
+> into PROJ/GDAL data paths, so the env cannot be moved without rewriting it — but the
+> repo it serves can be renamed freely. Keep `$PROJ` pointed at the toolchain and run
+> everything else from the repo. **Never let `$PROJ` leak into `PYTHONPATH` or `NJ_ROOT`**
+> — `hpc/build_mesh.slurm` and `hpc/probe_mesh.slurm` both carry a comment about the time
+> it did exactly that and imported the wrong `nj_sfincs`.
 
 ```bash
-export PROJ=$HOME/nj_sandy_sfincs                       # add to ~/.bashrc
+export PROJ=$HOME/nj_sandy_sfincs        # TOOLCHAIN (env + containers); add to ~/.bashrc
+export REPO=$HOME/nj_coast_sfincs        # the project
 export MAMBA_ROOT_PREFIX=$PROJ/micromamba
 MM=$PROJ/micromamba/bin/micromamba
 # 1. env from the pinned spec (bleeding-edge py3.14 stack solved fine, no relaxing needed)

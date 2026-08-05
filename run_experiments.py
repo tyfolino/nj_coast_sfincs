@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 """Run the NJ Sandy SnapWave sensitivity experiments.
 
-The static build + base forcing are built ONCE into ``experiments/_template``
+The static build + base forcing are built ONCE into ``experiments/<domain>/_template_sealed``
 (they are identical across every wave experiment); each experiment then copies
 the template, layers on its SnapWave knobs, runs SFINCS, and is validated. Skill
-metrics are aggregated into ``experiments/metrics.csv`` and a self-contained
-``experiments/report.html``.
+metrics are aggregated into ``experiments/<domain>/metrics.csv`` and a self-contained
+``experiments/<domain>/report.html``.
 
 Examples
 --------
@@ -40,17 +40,19 @@ import pandas as pd
 # Import the package first — its __init__ primes PROJ before hydromt_sfincs loads
 # (see nj_sfincs/__init__.py). Keep this ahead of the hydromt_sfincs import.
 from nj_sfincs import domain, model, premier, report, run, validate
-from nj_sfincs.config import EXPERIMENTS, ROOT, BaseConfig, WaveConfig, with_window
+from nj_sfincs.config import EXPERIMENTS, BaseConfig, WaveConfig, exp_root, with_window
 
 from hydromt_sfincs import SfincsModel
 
-EXP_ROOT = ROOT / "experiments"
+# experiments/<domain> — see nj_sfincs/config.py:exp_root. Resolved once here because a
+# single run works on one domain; NJ_DOMAIN is read at import, like NJ_TEMPLATE below.
+EXP_ROOT = exp_root()
 
 # THE domain every new experiment is staged from. See nj_sfincs/premier.py: this used to
 # be `_template` (the pre-rebuild, leaking-Navesink / dammed-Shark build), which silently
 # voided the whole 2026-07-20 phase-lag A/B. Overridable via NJ_TEMPLATE for deliberate
 # work on another domain — the lineage assert below still reports what you actually got.
-TEMPLATE = Path(os.environ.get("NJ_TEMPLATE", premier.SEALED_TEMPLATE))
+TEMPLATE = Path(os.environ.get("NJ_TEMPLATE", premier.sealed_template()))
 FLOODMAPS = EXP_ROOT / "floodmaps"
 METRICS_CSV = EXP_ROOT / "metrics.csv"
 

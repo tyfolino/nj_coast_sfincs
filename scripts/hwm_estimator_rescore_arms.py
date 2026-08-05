@@ -12,10 +12,14 @@ import numpy as np
 import geopandas as gpd
 import rioxarray
 import pandas as pd
+import os
 from pathlib import Path
 
-# Write beside the other reports, not into whatever cwd this was launched from.
-OUT = Path(__file__).resolve().parents[1] / "reports"
+# Resolve against the repo root, not whatever cwd this was launched from. Every path
+# below is repo-relative: v1 and v2 now live in ONE repo, namespaced by domain
+# (experiments/<domain>/<arm>), where they used to be absolute paths into two.
+ROOT = Path(os.environ.get("NJ_ROOT", Path(__file__).resolve().parents[1]))
+OUT = ROOT / "reports"
 OUT.mkdir(parents=True, exist_ok=True)
 
 # Take the wet threshold FROM validate so this cannot drift from the scorer. It is
@@ -27,8 +31,8 @@ _sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from nj_sfincs.validate import DEPTH_MIN  # noqa: E402
 
 GROUND_CAP, RAD = 0.5, 8   # RAD 8 px = 50 m, the production radius
-V1 = Path("/cache/home/tpj8/nj_sandy_sfincs/experiments")
-V2 = Path("/home/tpj8/nj_coast_sfincs/experiments")
+V1 = ROOT / "experiments" / "v1_monmouth"
+V2 = ROOT / "experiments" / "v2_barnegat"
 ARMS = [
     ("v1", "faber-waves-premier", V1 / "faber-waves-premier"),
     ("v1", "tide-shift", V1 / "tide-shift"),
@@ -38,7 +42,7 @@ ARMS = [
     ("v2", "wave-cora", V2 / "wave-cora"),
 ]
 hwm = gpd.read_file(
-    "/cache/home/tpj8/nj_sandy_sfincs/data/validation/sandy_hwms.geojson").to_crs(32618)
+    ROOT / "data" / "validation" / "v1_monmouth" / "sandy_hwms.geojson").to_crs(32618)
 head = hwm["quality"].astype(float).values <= 2
 obs = hwm["elev_m"].values
 XY = list(zip(hwm.geometry.x.values, hwm.geometry.y.values))

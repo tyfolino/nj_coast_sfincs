@@ -33,9 +33,9 @@ from hydromt_sfincs import SfincsModel
 
 import nj_sfincs  # noqa: F401  (PROJ primer — must precede hydromt_sfincs)
 from nj_sfincs import model, premier
-from nj_sfincs.config import DATA, EXPERIMENTS, ROOT, BaseConfig
+from nj_sfincs.config import exp_root, DATA, EXPERIMENTS, ROOT, BaseConfig
 
-EXP = ROOT / "experiments"
+EXP = exp_root()
 REF = EXP / "_template_sealed"
 TEMPLATE = EXP / "_template_baymanning"
 

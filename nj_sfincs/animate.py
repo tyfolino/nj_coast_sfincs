@@ -30,7 +30,7 @@ import numpy as np
 import xarray as xr
 import xugrid as xu
 
-from .config import ROOT
+from .config import ROOT, exp_root
 
 # Named map windows (x0, x1, y0, y1) in UTM 18N metres. ``None`` = the whole domain
 # (~71 x 42 km). SHREWSBURY mirrors plots.SHREWSBURY_WINDOW — the estuary the leak
@@ -70,7 +70,7 @@ def _run_dir(run, root=None) -> Path:
     p = Path(run)
     if p.is_dir() and (p / "sfincs_map.nc").is_file():
         return p
-    return (Path(root) if root else ROOT / "experiments") / str(run)
+    return (Path(root) if root else exp_root()) / str(run)
 
 
 # The index raster is the one genuinely expensive step (~0.6 s), and a notebook

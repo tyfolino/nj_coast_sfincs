@@ -31,6 +31,10 @@ from pathlib import Path
 
 from nj_sfincs.config import ROOT
 
+# ALL domains, not exp_root()'s single one. Grouping is by (basename, md5), so a file is
+# only ever linked to a byte-identical twin — two domains with different meshes simply
+# never match, and the cross-domain scan costs nothing but finds the cases that do (a
+# shared roughness/subgrid tier between domains built from the same source rasters).
 EXP = ROOT / "experiments"
 
 # Large, read-only inputs that are identical across runs staged from the same mesh.
@@ -47,10 +51,23 @@ def md5(p: Path, chunk: int = 1 << 22) -> str:
     return h.hexdigest()
 
 
-def candidates():
-    for run in sorted(EXP.iterdir()):
-        if not run.is_dir():
+def runs():
+    """Every run dir, across every domain: experiments/<domain>/<arm>.
+
+    The extra nesting level arrived with the 2026-08-05 domain namespacing. Walking
+    `EXP.iterdir()` directly would iterate the DOMAIN dirs and find no `sfincs.nc` in
+    them — which reports "0 files, 0.0 GB" and reads exactly like "already deduped".
+    """
+    for dom in sorted(EXP.iterdir()):
+        if not dom.is_dir():
             continue
+        for run in sorted(dom.iterdir()):
+            if run.is_dir():
+                yield run
+
+
+def candidates():
+    for run in runs():
         for f in sorted(run.iterdir()):
             if f.is_file() and f.name in TARGETS and f.stat().st_size >= MIN_BYTES:
                 yield f
@@ -80,15 +97,21 @@ def main() -> None:
         if not dups:
             continue
         size = canon.stat().st_size
-        print(f"  {name:<28} {digest[:8]}  {len(files):2d} copies "
-              f"({size/(1<<20):6.0f} MB)  -> linking {len(dups)}")
+        # Bytes freed = (distinct inodes - 1) x size, NOT (files - 1) x size. Several of
+        # the `dups` usually already share ONE inode with each other; re-linking them
+        # frees one physical copy between them, not one per file. Counting files
+        # overstated the 2026-08-05 reclaim as 17.5 GB when the truth was 9.3 GB.
+        n_ino = len({f.stat().st_ino for f in files})
+        print(f"  {name:<28} {digest[:8]}  {len(files):2d} copies, {n_ino} inodes "
+              f"({size/(1<<20):6.0f} MB)  -> linking {len(dups)}, freeing "
+              f"{(n_ino - 1) * size / (1 << 20):.0f} MB")
         for d in dups:
             if apply:
                 tmp = d.with_suffix(d.suffix + ".dedupe_tmp")
                 os.link(canon, tmp)      # link first, then atomically replace
                 os.replace(tmp, d)
-            saved += size
             linked += 1
+        saved += (n_ino - 1) * size
 
     G = 1 << 30
     print(f"\n{'APPLIED' if apply else 'DRY RUN'}: {linked} files -> hard links, "

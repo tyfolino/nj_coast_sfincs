@@ -46,7 +46,7 @@ import numpy as np
 import pandas as pd
 
 import nj_sfincs  # noqa: F401
-from nj_sfincs.config import ROOT
+from nj_sfincs.config import exp_root, ROOT
 from nj_sfincs.validate import (
     HWM_BASINS,
     hwm_metrics,
@@ -55,17 +55,17 @@ from nj_sfincs.validate import (
     tidal_range_metric,
 )
 
-EXP = ROOT / "experiments"
+EXP = exp_root()
 OBS_CREST = 2.935          # Shrewsbury, surveyed post-event crest (no hydrograph exists)
 OBS_TIDE_SHARK = 1.52      # USGS 01407770, mean per-M2-cycle range, pre-storm
 OBS_TIDE_SHREWS = 1.23     # USGS 01407600, same
 OBS_FRAC_RISING = 0.47     # a real tide rises about half the time; a dammed basin, never
 
 RUNS = {
-    "sealed_faber_nowaves":    "FABER     sealed   nowaves",
-    "sealed_faber_waves":      "FABER     sealed   waves",
-    "sealed_galibier_nowaves": "GALIBIER  sealed   nowaves",
-    "sealed_galibier_waves":   "GALIBIER  sealed   waves",
+    "faber-nowaves":     "FABER     sealed   nowaves",
+    "faber-waves-premier": "FABER   sealed   waves    <- PREMIER",
+    "galibier-nowaves":  "GALIBIER  sealed   nowaves",
+    "galibier-waves":    "GALIBIER  sealed   waves",
 }
 
 # References on the OLD (leaking + dammed) domain. OPT-IN via --with-refs: the premier is

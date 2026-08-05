@@ -25,7 +25,7 @@ import pandas as pd
 
 import nj_sfincs  # noqa: F401  (PROJ primer)
 from nj_sfincs import validate
-from nj_sfincs.config import ROOT, DATA
+from nj_sfincs.config import exp_root, ROOT, DATA
 
 ARMS = [
     "wave-cora+bed-ehydro",                        # PRE-repair control
@@ -51,7 +51,7 @@ def open_model(d: Path):
 def main() -> int:
     rows = {}
     for name in ARMS:
-        d = ROOT / "experiments" / name
+        d = exp_root() / name
         if not (d / "sfincs_map.nc").is_file():
             print(f"[{name}] missing sfincs_map.nc — skipping")
             continue

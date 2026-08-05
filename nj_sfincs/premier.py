@@ -35,9 +35,11 @@ What survives everything is the **mesh and the bed**:
     OLD      547,267 faces   1,676 boundary edges   sha256(z, mask)[:16] = ffc48087214bb848
 
 The 41 extra boundary edges in the old domain *are* the leak: the free-outflow face hydromt
-cut across the Navesink. Verified stable across ``_template_sealed``, ``sealed_faber_waves``,
-``sealed_faber_nowaves`` and ``sealed_galibier_waves`` (waves on and off, both engines), and
-distinct from ``_template`` and all three ``phaselag_*`` arms.
+cut across the Navesink. Verified stable across ``_template_sealed``, ``faber-waves-premier``,
+``faber-nowaves`` and ``galibier-waves`` (waves on and off, both engines), and distinct from
+``_template`` and all three ``phaselag_*`` arms. (Those three arms were named
+``sealed_faber_waves`` / ``sealed_faber_nowaves`` / ``sealed_galibier_waves`` when the
+fingerprint was taken; renamed 2026-07-27, see ``docs/naming.md``.)
 
 ``snapwave_mask`` is deliberately EXCLUDED from the hash — ``add_waves`` rewrites it per wave
 config, so folding it in would make no-waves and waves arms of the same domain disagree.
@@ -45,7 +47,7 @@ config, so folding it in would make no-waves and waves arms of the same domain d
 Audit any directory::
 
     NJ_ROOT=$PWD PYTHONPATH=$PWD micromamba/envs/sfincs/bin/python -m nj_sfincs.premier \\
-        experiments/sealed_faber_waves experiments/phaselag_battery
+        experiments/v1_monmouth/faber-waves-premier experiments/v2_barnegat/wave-cora
 """
 
 from __future__ import annotations
@@ -59,7 +61,7 @@ import numpy as np
 import xarray as xr
 
 from nj_sfincs import domain as _domain
-from nj_sfincs.config import ROOT
+from nj_sfincs.config import exp_root
 
 # ---------------------------------------------------------------------------
 # The premier
@@ -71,12 +73,23 @@ from nj_sfincs.config import ROOT
 #: separately below rather than being inferred from the run's name.
 PREMIER_NAME = "faber-waves-premier"
 
-#: The ONLY template new experiments may be staged from.
-SEALED_TEMPLATE = ROOT / "experiments" / "_template_sealed"
+TEMPLATE_NAME = "_template_sealed"
+LEGACY_TEMPLATE_NAME = "_template"
 
-#: The pre-rebuild template: leaking Navesink, dammed Shark. Kept for provenance of the
-#: historical runs that sit on it. Nothing new should ever be built here.
-LEGACY_TEMPLATE = ROOT / "experiments" / "_template"
+
+def sealed_template() -> Path:
+    """The ONLY template new experiments may be staged from, for the ACTIVE domain.
+
+    Domain-scoped (``experiments/<domain>/_template_sealed``) because each domain
+    has its own sealed template under the same name — see ``config.exp_root``.
+    """
+    return exp_root() / TEMPLATE_NAME
+
+
+def legacy_template() -> Path:
+    """The pre-rebuild template: leaking Navesink, dammed Shark. Kept for provenance of
+    the historical runs that sit on it. Nothing new should ever be built here."""
+    return exp_root() / LEGACY_TEMPLATE_NAME
 
 
 @dataclass(frozen=True)
@@ -341,7 +354,7 @@ def assert_sealed_domain(model_dir: Path | str, context: str = "") -> None:
             f"    expected {want}  <- {KNOWN[want]}\n"
             f"    got      {got}"
             + (f"  <- {KNOWN[got]}" if got in KNOWN else "  <- UNRECOGNISED domain")
-            + f"\n  Stage from {SEALED_TEMPLATE.name}, not {LEGACY_TEMPLATE.name}, and\n"
+            + f"\n  Stage from {TEMPLATE_NAME}, not {LEGACY_TEMPLATE_NAME}, and\n"
               f"  check NJ_DOMAIN (currently {dom!r}) and NJ_FROZEN_MESH agree.\n"
               "  Results from the wrong domain are void: the pre-rebuild mesh leaks 92.5%\n"
               "  of estuary inflow through the Navesink and Shark River Inlet is dammed\n"
@@ -375,10 +388,10 @@ def _main(argv: list[str] | None = None) -> int:
     import sys
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
-        args = sorted(str(p) for p in (ROOT / "experiments").glob("*")
+        args = sorted(str(p) for p in exp_root().glob("*")
                       if (p / "sfincs.nc").exists())
     dom = _domain.active().name
-    print(f"PREMIER = {PREMIER_NAME}   template = {SEALED_TEMPLATE.name}")
+    print(f"PREMIER = {PREMIER_NAME}   template = {TEMPLATE_NAME}")
     print(f"NJ_DOMAIN = {dom}")
     print(f"expected domain: {expected()}\n")
     bad = 0

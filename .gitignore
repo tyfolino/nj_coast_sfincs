@@ -37,6 +37,9 @@ __pycache__/
 # Logs
 *.log
 logs/
+# ...but keep the directory itself: hpc/*.slurm write to logs/ via `#SBATCH -e
+# logs/<job>.out`, and sbatch fails outright if the directory is absent in a fresh clone.
+!logs/.gitkeep
 
 # HPC / Amarel — reproducible env + containers + scratch outputs (never commit)
 # (git does NOT support inline comments — keep patterns on their own lines)

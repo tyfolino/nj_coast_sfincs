@@ -23,9 +23,9 @@ import numpy as np
 import xarray as xr
 from shapely.geometry import LineString
 
-from nj_sfincs.config import ROOT
+from nj_sfincs.config import exp_root, ROOT
 
-REF = ROOT / "experiments" / "snapwave_tuned_25m"
+REF = exp_root() / "snapwave_tuned_25m"
 # Barrier runs y 4462500 (where it roots into the mainland and the estuary closes) to
 # the Highlands throat at 4472000. The two lines must MEET at a corner: if they cross,
 # flux is double-counted; if they leave a gap, water enters unmeasured.

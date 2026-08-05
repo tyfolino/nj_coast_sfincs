@@ -24,12 +24,29 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
-# Repo root (…/nj_sandy_sfincs), overridable via NJ_ROOT. nj_sfincs/ lives one
+# Repo root (…/nj_coast_sfincs), overridable via NJ_ROOT. nj_sfincs/ lives one
 # level below the root, so parents[1] is the root.
 ROOT = Path(os.environ.get("NJ_ROOT", Path(__file__).resolve().parents[1]))
 DATA = ROOT / "data"
 
 from . import domain as _domain  # noqa: E402  (geography registry; see domain.py)
+
+
+def exp_root() -> Path:
+    """``experiments/<domain>`` — the run tree for the ACTIVE domain.
+
+    Experiment names are domain-relative on purpose: ``faber-waves-premier`` and
+    ``_template_sealed`` name the same *configuration* on every domain, so the
+    same name exists once per domain and means a different model each time
+    (``v1_monmouth`` is 547,408 faces, ``v2_barnegat`` is 1,143,357). Before this
+    split they lived in one flat ``experiments/`` across two repos, where a merge
+    would have silently destroyed one of them. ``docs/naming.md`` prescribed
+    ``<domain>/<arm>`` on 2026-07-27; this is that rule in code.
+
+    A function, not a module constant, because ``NJ_DOMAIN`` is read at call time
+    — a constant would freeze whichever domain happened to be active at import.
+    """
+    return ROOT / "experiments" / _domain.active().name
 
 # Elevation merge, top → bottom; first dataset with data wins. Verbatim from the
 # notebook. Kept as a tuple (dataclass forbids mutable list/dict defaults; a

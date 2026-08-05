@@ -57,9 +57,9 @@ from rasterio.warp import transform as rtx
 from scipy import ndimage
 
 import nj_sfincs  # noqa: F401
-from nj_sfincs.config import ROOT
+from nj_sfincs.config import exp_root, ROOT
 
-MODEL = ROOT / "experiments" / "snapwave_tuned_25m" / "sfincs.nc"
+MODEL = exp_root() / "snapwave_tuned_25m" / "sfincs.nc"
 CUDEM = ROOT / "data" / "elevation" / "cudem_nj_clip.tif"
 CACHE = ROOT / "data" / "elevation" / "ehydro" / "raw"
 OUT = ROOT / "reports" / "paved_channels.csv"

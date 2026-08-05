@@ -21,9 +21,7 @@ The CRS is left as the model's native one (UTM, metres). Reproject downstream if
 the consumer needs degrees; doing it here would resample depths for no reason.
 
 Run (v1 premier, the frozen domain — the right thing to share while v2 is mid-campaign):
-    NJ_ROOT=/cache/home/tpj8/nj_sandy_sfincs NJ_DOMAIN=v1_monmouth \
-    PYTHONPATH=/cache/home/tpj8/nj_coast_sfincs \
-        python scripts/export_share_floodmap.py
+    NJ_DOMAIN=v1_monmouth PYTHONPATH=$PWD python scripts/export_share_floodmap.py
 """
 
 from __future__ import annotations
@@ -35,9 +33,10 @@ import numpy as np
 
 import nj_sfincs  # noqa: F401  (PROJ primer — must precede hydromt_sfincs)
 from nj_sfincs import validate
+from nj_sfincs.config import ROOT
 
-V1_PREMIER = Path("/cache/home/tpj8/nj_sandy_sfincs/experiments/faber-waves-premier")
-DEFAULT_OUT = Path("/cache/home/tpj8/nj_coast_sfincs/share")
+V1_PREMIER = ROOT / "experiments" / "v1_monmouth" / "faber-waves-premier"
+DEFAULT_OUT = ROOT / "share"
 
 #: The arm name alone is AMBIGUOUS — `faber-waves-premier` exists on BOTH v1_monmouth
 #: and v2_barnegat, with different extents. The shared filename must carry the domain.

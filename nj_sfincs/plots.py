@@ -21,7 +21,7 @@ import xarray as xr
 from matplotlib.colors import ListedColormap
 from matplotlib.patches import Patch
 
-from .config import ROOT
+from .config import ROOT, exp_root
 
 DATA = ROOT / "data"
 
@@ -299,7 +299,7 @@ def plot_wave_field_panels(runs, root=None, margin=2500.0, ncol=None, panel_h=6.
     import matplotlib.pyplot as plt
     from matplotlib.collections import PolyCollection
 
-    root = Path(root) if root else ROOT / "experiments"
+    root = Path(root) if root else exp_root()
     if not isinstance(runs, dict):
         runs = {r: r for r in runs}
     runs = {k: v for k, v in runs.items() if (root / v / "sfincs_map.nc").exists()}
@@ -687,7 +687,7 @@ def plot_engine_panels(runs, root=None, window=SHREWSBURY_WINDOW, vmax=3.0,
     """
     import matplotlib.pyplot as plt
 
-    root = Path(root) if root is not None else ROOT / "experiments"
+    root = Path(root) if root is not None else exp_root()
     n = len(runs)
     # The domain is tall and narrow (~12 x 20 km), so one row reads best and keeps
     # the panels genuinely side by side. Size each panel to the window's aspect,
@@ -749,7 +749,7 @@ def plot_engine_difference(run_a, run_b, root=None, window=SHREWSBURY_WINDOW,
     """
     import matplotlib.pyplot as plt
 
-    root = Path(root) if root is not None else ROOT / "experiments"
+    root = Path(root) if root is not None else exp_root()
     ha, dep = load_cached_floodmap(root / run_a, window=window)
     hb, _ = load_cached_floodmap(root / run_b, window=window)
     if ha is None or hb is None:
@@ -993,7 +993,7 @@ def plot_gauge_verification(runs, root=None, data_dir=DATA, hours=None):
         except Exception:
             return ""
 
-    root = Path(root) if root else ROOT / "experiments"
+    root = Path(root) if root else exp_root()
     if not isinstance(runs, dict):
         runs = {r: r for r in runs}
 
@@ -1149,7 +1149,7 @@ def plot_interior_gauge_series(runs, root=None, data_dir=DATA, source="map",
 
     from . import validate as _v
 
-    root = Path(root) if root else ROOT / "experiments"
+    root = Path(root) if root else exp_root()
     if not isinstance(runs, dict):
         runs = {r: r for r in runs}
     runs = {k: v for k, v in runs.items() if (root / v / "sfincs_map.nc").exists()}
@@ -1239,7 +1239,7 @@ def plot_motf_panels(runs, root=None, data_dir=DATA, ncol=2):
 
     from .validate import DEPTH_MIN, load_floodmap
 
-    root = Path(root) if root else ROOT / "experiments"
+    root = Path(root) if root else exp_root()
     if not isinstance(runs, dict):
         runs = {r: r for r in runs}
     runs = {k: v for k, v in runs.items() if (root / v / "sfincs_map.nc").exists()}
@@ -1322,7 +1322,7 @@ def plot_hwm_residual_panels(runs, root=None, data_dir=DATA, ncol=2):
 
     from .validate import load_floodmap
 
-    root = Path(root) if root else ROOT / "experiments"
+    root = Path(root) if root else exp_root()
     if not isinstance(runs, dict):
         runs = {r: r for r in runs}
     runs = {k: v for k, v in runs.items() if (root / v / "sfincs_map.nc").exists()}

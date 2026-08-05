@@ -24,8 +24,8 @@ set -euo pipefail
 
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 # Repo root is ALWAYS the submit dir. Do NOT reuse an inherited variable here:
-# this account exports PROJ=/home/tpj8/nj_sandy_sfincs in its shell profile, so
-# the `PROJ="${PROJ:-$PWD}"` idiom inherited from the old repo silently pointed
+# this account exports PROJ=/home/tpj8/nj_sandy_sfincs (the TOOLCHAIN dir) in its shell
+# profile, so the `PROJ="${PROJ:-$PWD}"` idiom silently pointed
 # PYTHONPATH at the OTHER repo and imported the wrong nj_sfincs package.
 REPO="$PWD"
 OUT="${1:-data/probe_mesh}"

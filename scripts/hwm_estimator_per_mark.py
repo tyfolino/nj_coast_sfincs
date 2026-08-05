@@ -11,21 +11,25 @@ import numpy as np
 import geopandas as gpd
 import rioxarray
 import pandas as pd
+import os
 from pathlib import Path
 
-# Write beside the other reports, not into whatever cwd this was launched from.
-OUT = Path(__file__).resolve().parents[1] / "reports"
+# Resolve against the repo root, not whatever cwd this was launched from. Every path
+# below is repo-relative: v1 and v2 now live in ONE repo, namespaced by domain
+# (experiments/<domain>/<arm>), where they used to be absolute paths into two.
+ROOT = Path(os.environ.get("NJ_ROOT", Path(__file__).resolve().parents[1]))
+OUT = ROOT / "reports"
 OUT.mkdir(parents=True, exist_ok=True)
 
 DEPTH_MIN = 0.05
 GROUND_CAP = 0.5
 
 RUNS = {
-    "v1": Path("/cache/home/tpj8/nj_sandy_sfincs/experiments/faber-waves-premier"),
-    "v2": Path("/home/tpj8/nj_coast_sfincs/experiments/faber-waves-premier"),
-    "v2cora": Path("/home/tpj8/nj_coast_sfincs/experiments/wave-cora"),
+    "v1": ROOT / "experiments" / "v1_monmouth" / "faber-waves-premier",
+    "v2": ROOT / "experiments" / "v2_barnegat" / "faber-waves-premier",
+    "v2cora": ROOT / "experiments" / "v2_barnegat" / "wave-cora",
 }
-HWM_V1 = Path("/cache/home/tpj8/nj_sandy_sfincs/data/validation/sandy_hwms.geojson")
+HWM_V1 = ROOT / "data" / "validation" / "v1_monmouth" / "sandy_hwms.geojson"
 
 hwm = gpd.read_file(HWM_V1).to_crs(32618)
 ids = hwm["hwm_id"].astype(str).values

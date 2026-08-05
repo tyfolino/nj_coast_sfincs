@@ -21,9 +21,9 @@ from pathlib import Path
 
 from hydromt_sfincs import SfincsModel
 
-from nj_sfincs.config import ROOT, DATA, BaseConfig, DEFAULT_ELEVATION_LIST
+from nj_sfincs.config import exp_root, ROOT, DATA, BaseConfig, DEFAULT_ELEVATION_LIST
 
-DST = ROOT / "experiments" / "narrows_wide_h"
+DST = exp_root() / "narrows_wide_h"
 base = BaseConfig()
 
 

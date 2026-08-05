@@ -38,10 +38,11 @@ ROOT = Path(os.environ.get("NJ_ROOT", Path(__file__).resolve().parents[1]))
 # scorer's. Same reason hwm_estimator_rescore_arms.py imports it.
 import sys as _sys  # noqa: E402
 _sys.path.insert(0, str(ROOT))
+from nj_sfincs.config import exp_root  # noqa: E402
 from nj_sfincs.validate import DEPTH_MIN  # noqa: E402
 
 GROUND_CAP, RAD = 0.5, 8
-RUN = ROOT / "experiments" / "faber-waves-premier"
+RUN = exp_root() / "faber-waves-premier"
 
 
 def main():
