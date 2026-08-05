@@ -7,10 +7,18 @@ the template, layers on its SnapWave knobs, runs SFINCS, and is validated. Skill
 metrics are aggregated into ``experiments/<domain>/metrics.csv`` and a self-contained
 ``experiments/<domain>/report.html``.
 
+⚠️ ONLY ``--check`` IS READ-ONLY. ``--inputs-only`` / ``--no-run`` / the deprecated
+``--dry-run`` all DESTROY and re-stage each experiment directory before skipping the
+solver — "dry run" here never meant "touch nothing", and reading it that way cost the
+v2 premier's output on 2026-08-05.
+
 Examples
 --------
-    # Build inputs for the baseline, no solver (fast sanity check):
-    python run_experiments.py --experiments baseline_no_waves --dry-run
+    # Read-only: resolve paths, assert the template's domain, print the plan:
+    python run_experiments.py --experiments faber-waves-premier --check
+
+    # Re-stage inputs without solving (DESTRUCTIVE — rmtree's the experiment dir):
+    python run_experiments.py --experiments baseline_no_waves --inputs-only
 
     # Cheap smoke test: one short-window run end-to-end:
     python run_experiments.py --experiments baseline_no_waves --tstop 2012-10-29
@@ -120,27 +128,51 @@ def _inp_tstop(model_dir: Path) -> datetime | None:
     return None
 
 
-def prepare_experiment(name: str, base: BaseConfig) -> Path:
-    """Copy the template and apply the experiment's wave knobs. Returns exp dir."""
+def check_template_domain(name: str) -> None:
+    """Assert the TEMPLATE is on the domain `name` requires — WITHOUT touching anything.
+
+    ⚠️ Call this BEFORE any destructive step. The staged arm's domain is the template's
+    domain (``copytree`` is exact), so checking the template is equivalent to checking the
+    copy and costs nothing but the hash.
+
+    This ordering is the whole point. Until 2026-08-05 the check ran on `exp_dir` AFTER
+    `rmtree` + `copytree`, so a domain mismatch could only ever be reported once the
+    destination had already been destroyed — which is exactly how
+    `experiments/v2_barnegat/faber-waves-premier`'s output was lost, to a command whose
+    author believed it was read-only.
+    """
     exp = EXPERIMENTS[name]
-    exp_dir = EXP_ROOT / name
-    print(f"[{name}] preparing ({exp.description})")
-    if exp_dir.exists():
-        shutil.rmtree(exp_dir)
-    shutil.copytree(TEMPLATE, exp_dir)
-    # Fail here, before the solver burns an hour on the wrong planet.
     # A BRACKET takes the opposite check: it is SUPPOSED to be an inadmissible domain,
     # so assert_sealed_domain would (correctly) refuse it. assert_bracket confirms it is
     # the bracket it claims to be AND that the caller passed NJ_ALLOW_BRACKET.
     if exp.bracket:
-        premier.assert_bracket(exp_dir, exp.bracket,
-                               context=f"staging bracket '{name}'")
+        premier.assert_bracket(TEMPLATE, exp.bracket,
+                               context=f"staging bracket '{name}' from {TEMPLATE.name}")
         print(f"[{name}] *** INADMISSIBLE BRACKET '{exp.bracket}' "
               f"({premier.BRACKETS[exp.bracket].bound} bound) — bounds a quantity, "
               "is not a candidate configuration")
     else:
         premier.assert_sealed_domain(
-            exp_dir, context=f"staging '{name}' from {TEMPLATE.name}")
+            TEMPLATE, context=f"staging '{name}' from {TEMPLATE.name}")
+
+
+def prepare_experiment(name: str, base: BaseConfig) -> Path:
+    """Copy the template and apply the experiment's wave knobs. Returns exp dir."""
+    exp = EXPERIMENTS[name]
+    exp_dir = EXP_ROOT / name
+    # Domain check FIRST — nothing below this line is reversible.
+    check_template_domain(name)
+    print(f"[{name}] preparing ({exp.description})")
+    if exp_dir.exists():
+        shutil.rmtree(exp_dir)
+    shutil.copytree(TEMPLATE, exp_dir)
+    # Re-assert on the copy: cheap next to a solve, and it catches a truncated or
+    # partially-written copytree that the template check cannot see.
+    if exp.bracket:
+        premier.assert_bracket(exp_dir, exp.bracket,
+                               context=f"staged bracket '{name}'")
+    else:
+        premier.assert_sealed_domain(exp_dir, context=f"staged '{name}'")
 
     sf = SfincsModel(str(exp_dir), data_libs=base.data_libs, mode="r+")
     sf.read()
@@ -216,8 +248,16 @@ def main(argv=None) -> int:
                    help="force-rebuild experiments/_template even if it exists")
     p.add_argument("--no-run", action="store_true",
                    help="build inputs but do not run the solver")
-    p.add_argument("--dry-run", action="store_true",
-                   help="build inputs only, skip solver AND validation")
+    p.add_argument("--inputs-only", action="store_true",
+                   help="WRITES INPUTS (destroys and re-stages each experiment dir), "
+                        "then skips solver AND validation. For a read-only check use "
+                        "--check.")
+    p.add_argument("--dry-run", dest="dry_run", action="store_true",
+                   help="DEPRECATED alias for --inputs-only. It is NOT read-only — it "
+                        "rmtree's each experiment dir. Use --check instead.")
+    p.add_argument("--check", action="store_true",
+                   help="read-only: resolve paths, assert the template's domain, print "
+                        "the plan. Writes and deletes NOTHING.")
     p.add_argument("--slurm", action="store_true",
                    help="submit each experiment via hpc/sfincs_run.slurm instead of "
                         "running locally (validate later with --validate-only)")
@@ -249,10 +289,41 @@ def main(argv=None) -> int:
     if unknown:
         p.error(f"unknown experiment(s): {unknown}. Choices: {list(EXPERIMENTS)}")
 
+    if args.dry_run:
+        print("⚠️  --dry-run is DEPRECATED and is NOT read-only: it rmtree's each\n"
+              "    experiment dir before re-staging it. Use --inputs-only if that is\n"
+              "    what you meant, or --check for a genuinely read-only pass.",
+              file=sys.stderr)
+
     base = BaseConfig()
     if args.tstop:
         base = with_window(base, datetime.strptime(args.tstop, "%Y-%m-%d"))
         print(f"[window] short run: tstop = {base.tstop:%Y-%m-%d}")
+
+    # ── check: read-only, must come BEFORE any mkdir/write ───────────────────
+    if args.check:
+        print(f"[check] NJ_DOMAIN   = {domain.active().name}")
+        print(f"[check] expected    = {premier.expected()}")
+        print(f"[check] EXP_ROOT    = {EXP_ROOT}")
+        print(f"[check] TEMPLATE    = {TEMPLATE}"
+              f"{'' if TEMPLATE.exists() else '   ** MISSING **'}")
+        print(f"[check] window ends = {base.tstop:%Y-%m-%d}"
+              f"{'' if template_matches(base) else '   ** template window MISMATCH:'
+                 ' a real run would REBUILD (rmtree) the template **'}")
+        bad = 0
+        for name in names:
+            exp_dir = EXP_ROOT / name
+            try:
+                check_template_domain(name)
+                verdict = "OK"
+            except Exception as e:  # noqa: BLE001 — report every arm, don't stop at one
+                verdict, bad = f"REFUSED — {type(e).__name__}: {e}", bad + 1
+            print(f"[check] {name}: {verdict}")
+            if exp_dir.exists():
+                print(f"          would DESTROY and re-stage {exp_dir}")
+        print(f"\n[check] read-only; nothing written. {len(names) - bad}/{len(names)} "
+              "would stage.")
+        return 1 if bad else 0
 
     EXP_ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -273,7 +344,7 @@ def main(argv=None) -> int:
     submitted = {}
     for name in names:
         exp_dir = prepare_experiment(name, base)
-        if args.dry_run or args.no_run:
+        if args.inputs_only or args.dry_run or args.no_run:
             print(f"[{name}] inputs written to {exp_dir} (solver skipped)")
             continue
         if args.slurm:
@@ -287,7 +358,7 @@ def main(argv=None) -> int:
             result = run.run_sfincs(exp_dir, sif=str(base.container_sif))
             print(f"[{name}] solver return code {result.returncode}")
 
-    if args.dry_run or args.no_run:
+    if args.inputs_only or args.dry_run or args.no_run:
         print("Done (inputs only).")
         return 0
     if args.slurm:

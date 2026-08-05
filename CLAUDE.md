@@ -72,13 +72,20 @@ which this repo symlinks to. It has its own README saying so. Never point `NJ_RO
 export PATH=$HOME/nj_sandy_sfincs/micromamba/envs/sfincs/bin:$PATH   # git lives here too
 export PYTHONPATH=$PWD
 
-python run_experiments.py --experiments <arm> --dry-run   # resolve paths, build nothing
+python run_experiments.py --experiments <arm> --check   # READ-ONLY: paths + domain assert
 python run_experiments.py --experiments <arm> --tstop 2012-10-29   # short-window smoke
 python run_experiments.py --slurm            # submit the sweep
 python run_experiments.py --validate-only    # aggregate once jobs finish
 
 NJ_DOMAIN=v2_barnegat python scripts/score_v2.py     # score the v2 ladder
+python -m unittest discover -s tests         # the test suite (stdlib unittest, ~19 s)
+NJ_DOMAIN=v1_monmouth python scripts/export_animations.py --list   # animation exports
 ```
+
+🔴 **`--check` is the ONLY read-only mode.** `--inputs-only`, `--no-run` and the
+deprecated `--dry-run` all `rmtree` each experiment directory before skipping the solver.
+Reading "dry run" as "touches nothing" destroyed the v2 premier's 1.8 GB of output on
+2026-08-05; `tests/test_domain_and_staging.py` now pins the ordering that prevents it.
 
 ⚠️ **Submit the STAGED dir via `run.submit_slurm(dir, sif=...)`, not `--slurm`,** when you
 have already staged. Always pass `sif` explicitly — leaving it to the batch script's
@@ -87,6 +94,23 @@ fallback is how a sweep silently ran on the wrong engine.
 ⚠️ **`build_template()` calls `rmtree` on its target.** It refuses when the template is
 already sealed for the active domain, but a template whose fingerprint has drifted does
 *not* trip that guard. Do not run the sweep driver to "just rebuild" a template.
+
+## 3a. Tests
+
+`tests/` uses stdlib **`unittest`** — pytest is deliberately not in the pinned env.
+
+```bash
+PYTHONPATH=$PWD python -m unittest discover -s tests -v
+```
+
+20 tests, ~19 s, no SFINCS and no writes into `experiments/`. They cover the domain
+registry, the fingerprint invariants (including "a bracket must never be in `EXPECTED`"),
+per-domain path resolution, and — most importantly — that `prepare_experiment` refuses a
+wrong domain *before* it destroys the destination. That last one fails loudly on the
+pre-2026-08-05 ordering.
+
+The repo had **zero** tests before this, and `domain.py` carried a comment claiming a test
+that did not exist. If a docstring says something is covered, check.
 
 ## 4. Traps that have actually cost runs
 

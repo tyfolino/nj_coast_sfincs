@@ -46,7 +46,25 @@ WINDOWS = {
     # any colour scale that includes it.
     "sandy_hook": (574000, 592000, 4468000, 4486000),
     "shark": (573000, 588000, 4442000, 4456000),        # the carved-open inlet
+
+    # ── v2_barnegat, the southern lobe (UTM 18N) ─────────────────────────────
+    # Moved here 2026-08-05 from a `animate.WINDOWS.update(...)` call inside the setup
+    # cell of notebooks/sfincs-nj-barnegat-viz-cora.ipynb. That cell carried its own
+    # warning — "registering late makes a top-to-bottom run die on KeyError" — which is
+    # a fragility that only existed because the windows lived in a notebook: any script
+    # or panel touching them failed unless that cell had been executed first.
+    # Gauge anchors: Barnegat Light x=576187 y=4401591; SSS x=576732 y=4401905;
+    # Mantoloking x=580665 y=4432687; Manasquan Inlet x=582393 y=4439670.
+    "barnegat_inlet": (568000, 584000, 4394000, 4410000),
+    "barnegat_bay": (566000, 588000, 4394000, 4436000),
+    "mantoloking": (574000, 588000, 4426000, 4440000),
+    "manasquan": (574000, 588000, 4434000, 4446000),
 }
+# NOTE: these are per-domain facts sharing one flat namespace — `shrewsbury`/`shark` are
+# v1_monmouth, `barnegat_*`/`mantoloking`/`manasquan` are v2_barnegat. It works because
+# the keys happen not to collide, which is luck, not design. The right home is
+# `domain.Domain` (see domain.py's opening argument for why geography is a registry);
+# moving them is a follow-up, not done here to avoid churning every plots.py call site.
 
 # label -> (long name, colour map, unit, default vmax). ``depth`` is derived
 # (zs - zb); the rest are read straight off the map file. ``None`` vmax = pick the

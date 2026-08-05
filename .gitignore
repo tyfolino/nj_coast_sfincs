@@ -63,3 +63,8 @@ sfincs-env.tar.gz
 .gitignore
 reports/figures/*.tif
 refs/*
+reports/v1_monmouth/animations/faber-waves-premier_depth_shark.gif
+reports/v1_monmouth/animations/faber-waves-premier_depth_shrewsbury.gif
+reports/v1_monmouth/animations/faber-waves-premier_hm0_sandy_hook.gif
+reports/v2_barnegat/animations/wave-cora+bed-ehydro+mask-inlet_depth_barnegat_inlet.gif
+reports/v2_barnegat/animations/wave-cora+bed-ehydro+mask-inlet_depth_mantoloking.gif

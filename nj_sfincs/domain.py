@@ -437,8 +437,12 @@ _NO_WL_BARNEGAT_INLET = NoWaterLevelBox(
 )
 
 # ── HWM basins ───────────────────────────────────────────────────────────────
-# v1's five, re-expressed as ordered rules. Same numbers, same outcome — there is
-# a test that asserts this reproduces the original classifier exactly.
+# v1's five, re-expressed as ordered rules. Same numbers, same outcome.
+# ⚠️ This comment used to claim "there is a test that asserts this reproduces the
+# original classifier exactly". There was no such test — the repo had none at all until
+# 2026-08-05. `tests/test_domain_and_staging.py` now covers the registry's structural
+# invariants (rules named, unique, non-empty per domain), but the equivalence to v1's
+# original classifier is still UNVERIFIED. Do not read it as checked.
 _BARRIER = dict(slope_x0=586_000, slope_y0=4_456_000, slope=0.075)  # NNE barrier axis
 
 _V1_BASIN_RULES = (
